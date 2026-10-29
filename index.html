@@ -129,7 +129,7 @@ body{margin:0}
     <button type="button" id="updatebtn">Update now</button>
   </div>
   <header>
-    <h1>Call List Dialer <span class="ver">v17</span></h1>
+    <h1>Call List Dialer <span class="ver">v18</span></h1>
     <span class="progress" id="progress">0 / 0</span>
   </header>
   <div class="bar"><i id="barfill"></i></div>
@@ -750,6 +750,64 @@ Example – Sam Okafor, +1 253-555-0111`;
       });
       return rows;
     }
+    // ---- row-number matching: names on one screenshot, phones on another, joined by the "#" column ----
+    const HDRWORDS=new Set(['name','first','last','full','home','phone','mobile','record','count','age','email','lead','status','leads']);
+    function numberedRows(tsv, imgW){
+      const words=parseTsv(tsv); if(!words.length) return [];
+      const lines=new Map(); words.forEach(w=>{ if(!lines.has(w.line)) lines.set(w.line,[]); lines.get(w.line).push(w); });
+      const hMed=median(words.map(w=>w.y1-w.y0))||20;
+      const leftEdge = imgW ? imgW*0.25 : Infinity;
+      const out=[];
+      [...lines.values()].forEach(ws=>{
+        ws.sort((a,b)=>a.x0-b.x0);
+        if(ws.some(w=>HDRWORDS.has(w.text.toLowerCase().replace(/[^a-z]/g,'')) && ws.length<=6)) return;   // header row
+        const cy=median(ws.map(w=>w.cy));
+        // row number: a 1-3 digit word at the far left
+        let numW=null;
+        for(const w of ws.slice(0,2)){ if(/^\d{1,3}\.?$/.test(w.text) && w.x0<leftEdge){ numW=w; break; } }
+        const rest=ws.filter(w=>w!==numW);
+        let s='', spans=[];
+        rest.forEach(w=>{ spans.push([s.length, s.length+w.text.length, w]); s+=w.text+' '; });
+        const m=s.match(PHONE_RE); let phone='', pw=new Set();
+        if(m){ const d=m[0].replace(/\D/g,'').replace(/^1(?=\d{10}$)/,''); if(d.length===10){ phone=d; spans.filter(([p,q])=>q>m.index && p<m.index+m[0].length).forEach(x=>pw.add(x[2])); } }
+        const nameToks=rest.filter(w=>!pw.has(w) && isNameWord(w) && !HDRWORDS.has(w.text.toLowerCase().replace(/[^a-z]/g,'')));
+        const name=nameToks.map(w=>splitJoined(cleanWord(w.text))).join(' ').trim();
+        if(!name && !phone) return;
+        out.push({num: numW ? parseInt(numW.text,10) : null, name, phone, cy});
+      });
+      out.sort((a,b)=>a.cy-b.cy);
+      // fill a misread row number from its neighbours, using the row spacing
+      const known=out.filter(r=>r.num!==null);
+      const pitch=median(known.slice(1).map((r,k)=>(r.cy-known[k].cy)/Math.max(1,r.num-known[k].num)).filter(x=>x>0)) || hMed*2.5;
+      out.forEach((r,k)=>{
+        if(r.num!==null) return;
+        const prev=[...out.slice(0,k)].reverse().find(x=>x.num!==null), next=out.slice(k+1).find(x=>x.num!==null);
+        if(!prev) return;
+        const guess=prev.num+Math.round((r.cy-prev.cy)/pitch);
+        if(guess>prev.num && (!next || guess<next.num) && Math.abs((r.cy-prev.cy)/pitch-(guess-prev.num))<0.35) r.num=guess;
+      });
+      // safety: numbers must go up down the screen and appear once; anything else is dropped from matching
+      const counts={}; out.forEach(r=>{ if(r.num!==null) counts[r.num]=(counts[r.num]||0)+1; });
+      let last=-1;
+      return out.filter(r=>{
+        if(r.num===null || counts[r.num]>1 || r.num<=last) return false;
+        last=r.num; return true;
+      });
+    }
+    function mergeByRowNumber(perShot){
+      // perShot: arrays of {num,name,phone}. Joins names and phones that share a row number across screenshots.
+      const byNum=new Map();
+      perShot.forEach(rows=>rows.forEach(r=>{
+        const e=byNum.get(r.num)||{num:r.num,name:'',phone:'',names:new Set(),phones:new Set()};
+        if(r.name){ e.names.add(r.name.toLowerCase()); if(r.name.length>e.name.length) e.name=r.name; }
+        if(r.phone){ e.phones.add(r.phone); e.phone=e.phone||r.phone; }
+        byNum.set(r.num,e);
+      }));
+      return [...byNum.values()].sort((a,b)=>a.num-b.num).map(e=>({
+        num:e.num, phone:e.phones.size===1? e.phone : '', name:e.name,
+        conflict: e.phones.size>1   // two different phones read for one row: don't guess
+      }));
+    }
     // older line-by-line reader, used only if the word positions aren't available
     function rowsFrom(text){
       const re=/(\+?1[\s.\-]?)?\(?\d{3}\)?[\s.\-]?\d{3}[\s.\-]?\d{4}/;
@@ -812,7 +870,7 @@ Example – Sam Okafor, +1 253-555-0111`;
         await worker.setParameters({ tessedit_pageseg_mode: '6' });   // read the table row by row
         // read them in the order they were taken, so the list keeps its order
         files.sort((a,b)=>(a.lastModified||0)-(b.lastModified||0));
-        let all=[]; const seen=new Set(), memo={}, report=[];
+        let all=[]; const seen=new Set(), memo={}, report=[], numbered=[];
         for(let i=0;i<files.length;i++){
           if(stopped) return;
           out(`Reading screenshot ${i+1} of ${files.length}…`);
@@ -822,15 +880,33 @@ Example – Sam Okafor, +1 253-555-0111`;
           const { data } = await worker.recognize(src, {}, { text:true, tsv:true });
           let rows = data.tsv ? rowsFromTsv(data.tsv, memo, imgW) : [];
           if(!rows.length) rows = rowsFrom(data.text||'');
+          if(data.tsv) numbered.push(numberedRows(data.tsv, imgW));
           let added=0, dup=0;
           rows.forEach(r=>{ if(seen.has(r.phone)){ dup++; return; } seen.add(r.phone); all.push(r); added++; });
-          report.push(`#${i+1}: ${added} new` + (dup ? `, ${dup} already read` : ''));
+          const names = data.tsv ? numbered.at(-1).filter(r=>r.name && !r.phone).length : 0;
+          report.push(`#${i+1}: ` + (rows.length ? `${added} new number${added===1?'':'s'}` + (dup ? `, ${dup} already read` : '') : (names ? `${names} names` : 'nothing found')));
+        }
+        // names and phones on separate screenshots: join them by row number
+        let matched=0;
+        if(numbered.some(rs=>rs.some(r=>r.name && !r.phone)) && numbered.some(rs=>rs.some(r=>r.phone))){
+          const merged=mergeByRowNumber(numbered);
+          const byPhone=new Map(all.map(r=>[r.phone,r]));
+          const ordered=[], placed=new Set();
+          merged.forEach(e=>{
+            if(!e.phone || placed.has(e.phone)) return;
+            const base=byPhone.get(e.phone) || {phone:e.phone, name:''};
+            if(e.name && !base.name){ base.name=e.name; matched++; }
+            ordered.push(base); placed.add(e.phone);
+          });
+          all.forEach(r=>{ if(!placed.has(r.phone)) ordered.push(r); });
+          all=ordered;
         }
         if(!all.length){ out('No phone numbers found. Try a sharper screenshot, zoomed in on the list.'); return; }
         $('listin').value = all.map(r=>(r.name? r.name+', ':'')+r.phone).join('\n');
         $('editbox').open = true;
         const noName = all.filter(r=>!r.name).length;
         out(`Found ${all.length} numbers from ${files.length} screenshot${files.length>1?'s':''} (${report.join(' · ')}).`
+          + (matched ? ` Matched ${matched} names to numbers by row number.` : '')
           + (noName ? ` ${noName} without a name.` : '')
           + ` Check every digit, fix anything off, then tap Load list.`);
         $('listin').scrollIntoView({behavior:'smooth', block:'center'});
@@ -844,7 +920,7 @@ Example – Sam Okafor, +1 253-555-0111`;
   })();
 
   // ---------- update check: compares this page with the copy on the site ----------
-  const VERSION = 17;
+  const VERSION = 18;
   (async function(){
     try{
       const base = location.pathname;
