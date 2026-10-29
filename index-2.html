@@ -1,0 +1,523 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Call List">
+<meta name="robots" content="noindex">
+<title>Call List Dialer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;700;800&family=IBM+Plex+Mono:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: one narrow column — current-call card on top, queue below, list editor tucked in a drawer */
+:root{
+  --bg:#eef1f4; --surface:#ffffff; --fg:#17202b; --muted:#5d6b7a; --line:#d5dce4;
+  --go:#14804a; --go-fg:#ffffff; --accent:#2b5a8a; --warn:#a2560f; --bad:#b3261e; --done-bg:#e3ecf5;
+  --display:"Archivo",system-ui,sans-serif; --body:"IBM Plex Sans",system-ui,sans-serif; --mono:"IBM Plex Mono",ui-monospace,Menlo,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#0f141a; --surface:#18202a; --fg:#e6ebf0; --muted:#94a2b2; --line:#2a3542;
+  --go:#2fae6c; --go-fg:#06180e; --accent:#7fb0e0; --warn:#e2a35b; --bad:#f08a80; --done-bg:#1f2b38; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0f141a; --surface:#18202a; --fg:#e6ebf0; --muted:#94a2b2; --line:#2a3542;
+  --go:#2fae6c; --go-fg:#06180e; --accent:#7fb0e0; --warn:#e2a35b; --bad:#f08a80; --done-bg:#1f2b38; color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font-family:var(--body);font-size:15px;line-height:1.45}
+.wrap{max-width:560px;margin:0 auto;padding-block:20px 48px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));display:flex;flex-direction:column;gap:16px}
+header{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap}
+h1{font-family:var(--display);font-weight:800;font-size:1.45rem;margin:0;letter-spacing:-.01em}
+.progress{font-family:var(--mono);font-size:.85rem;color:var(--muted);font-variant-numeric:tabular-nums}
+.bar{height:6px;background:var(--line);border-radius:3px;overflow:hidden}
+.bar>i{display:block;height:100%;background:var(--go);width:0;transition:width .3s}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:20px;display:flex;flex-direction:column;gap:14px}
+.label{font-size:.72rem;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);font-weight:600}
+.who{font-family:var(--display);font-weight:700;font-size:1.15rem;min-height:1.4em}
+.num{font-family:var(--mono);font-weight:600;font-size:clamp(1.6rem,8vw,2.3rem);letter-spacing:.02em;user-select:all;font-variant-numeric:tabular-nums;word-break:break-all}
+.call{display:flex;align-items:center;justify-content:center;gap:10px;background:var(--go);color:var(--go-fg);text-decoration:none;font-family:var(--display);font-weight:800;font-size:1.25rem;border-radius:12px;padding:18px;min-height:64px}
+.call:focus-visible,button:focus-visible,textarea:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.call svg{width:24px;height:24px}
+.row{display:flex;gap:8px;flex-wrap:wrap}
+button{font:inherit;font-weight:600;border:1px solid var(--line);background:var(--surface);color:var(--fg);border-radius:10px;padding:10px 14px;cursor:pointer}
+button:hover{border-color:var(--accent)}
+.outcomes{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
+.outcomes button{text-align:left}
+.outcomes button[aria-pressed="true"]{background:var(--done-bg);border-color:var(--accent)}
+.hint{font-size:.85rem;color:var(--muted);margin:0}
+.status{font-size:.85rem;color:var(--accent);min-height:1.2em;margin:0}
+ol.queue{list-style:none;margin:0;padding:0;background:var(--surface);border:1px solid var(--line);border-radius:14px;overflow:hidden}
+.queue li{display:grid;grid-template-columns:2.2em 1fr auto;gap:10px;align-items:center;padding:10px 14px;border-top:1px solid var(--line);cursor:pointer}
+.queue li:first-child{border-top:0}
+.queue li .i{font-family:var(--mono);color:var(--muted);font-size:.8rem;font-variant-numeric:tabular-nums}
+.queue li .n{font-family:var(--mono);font-size:.92rem;min-width:0;overflow-wrap:anywhere}
+.queue li .nm{display:block;font-family:var(--body);font-size:.8rem;color:var(--muted)}
+.queue li.cur{background:var(--done-bg)}
+.queue li.done .n{color:var(--muted)}
+.tag{font-size:.72rem;font-weight:600;padding:3px 8px;border-radius:999px;border:1px solid currentColor;white-space:nowrap}
+.t-talked{color:var(--go)} .t-vm{color:var(--accent)} .t-na{color:var(--warn)} .t-bad{color:var(--bad)} .t-called{color:var(--muted)}
+details{background:var(--surface);border:1px solid var(--line);border-radius:14px}
+summary{padding:14px 16px;font-weight:600;cursor:pointer}
+.editor{padding:0 16px 16px;display:flex;flex-direction:column;gap:10px}
+textarea{width:100%;min-height:170px;font-family:var(--mono);font-size:.9rem;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--fg);resize:vertical}
+.done-msg{text-align:center;font-family:var(--display);font-weight:700;font-size:1.2rem;padding:12px 0}
+#importcard[hidden]{display:none}
+input[type=file]{font:inherit;color:var(--muted);max-width:100%}
+.toggle{display:flex;gap:10px;align-items:flex-start;font-size:.92rem;padding:0 4px;cursor:pointer}
+.toggle input{width:20px;height:20px;margin-top:1px;accent-color:var(--go);flex:none}
+.cancel-auto{background:var(--done-bg)}
+.confirm{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:.9rem}
+@media (prefers-reduced-motion:reduce){.bar>i{transition:none}}
+html{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+body{margin:0}
+[hidden]{display:none!important}
+.settings{display:flex;flex-direction:column;gap:12px}
+.field{display:flex;flex-direction:column;gap:6px;padding-left:34px}
+.field input{font:inherit;font-family:var(--mono);font-size:.9rem;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--fg);width:100%}
+.field input:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.sum-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.stat{border:1px solid var(--line);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:2px}
+.stat b{font-family:var(--display);font-size:1.6rem;font-variant-numeric:tabular-nums;line-height:1.1}
+.stat span{font-size:.8rem;color:var(--muted)}
+.stat.k-talked b{color:var(--go)} .stat.k-vm b{color:var(--accent)} .stat.k-na b{color:var(--warn)} .stat.k-bad b{color:var(--bad)}
+.groups{display:flex;flex-direction:column;gap:12px}
+.group h3{margin:0 0 4px;font-size:.78rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.group ul{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:2px}
+.group li{display:flex;justify-content:space-between;gap:10px;font-size:.92rem}
+.group li .p{font-family:var(--mono);font-size:.85rem;color:var(--muted);white-space:nowrap}
+.texted{font-size:.72rem;color:var(--accent);margin-left:6px}
+.rate{font-size:.95rem;margin:0}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header>
+    <h1>Call List Dialer</h1>
+    <span class="progress" id="progress">0 / 0</span>
+  </header>
+  <div class="bar"><i id="barfill"></i></div>
+
+  <section class="card" id="current" aria-live="polite">
+    <div>
+      <div class="label" id="poslabel">Up next</div>
+      <div class="who" id="who"></div>
+      <div class="num" id="num"></div>
+    </div>
+    <a class="call" id="callbtn" href="#">
+      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6.6 10.8a15.1 15.1 0 0 0 6.6 6.6l2.2-2.2a1 1 0 0 1 1-.25 11.4 11.4 0 0 0 3.6.57 1 1 0 0 1 1 1V20a1 1 0 0 1-1 1A17 17 0 0 1 3 4a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1c0 1.25.2 2.45.57 3.57a1 1 0 0 1-.25 1z"/></svg>
+      Call
+    </a>
+    <p class="status" id="status"></p>
+    <button type="button" id="cancelauto" class="cancel-auto" hidden>Cancel auto-call</button>
+    <div>
+      <div class="label" style="margin-bottom:8px">How did it go? Tap one to move on</div>
+      <div class="outcomes" id="outcomes">
+        <button type="button" id="o-talked" data-o="talked">Talked</button>
+        <button type="button" id="o-vm" data-o="vm">Left voicemail</button>
+        <button type="button" id="o-na" data-o="na">No answer</button>
+        <button type="button" id="o-bad" data-o="bad">Bad number</button>
+      </div>
+    </div>
+    <div class="row">
+      <button type="button" id="prev">◀ Back</button>
+      <button type="button" id="skip">Skip ▶</button>
+      <button type="button" id="copynum">Copy number</button>
+    </div>
+    <p class="hint">Tap Call, hang up, come back, and tap a result. No answer and Left voicemail open a ready-to-send text.</p>
+  </section>
+
+  <section class="card" id="summary" hidden aria-live="polite">
+    <div>
+      <div class="label">List complete</div>
+      <div class="who" id="sumtitle"></div>
+      <p class="rate" id="sumrate"></p>
+    </div>
+    <div class="sum-grid" id="sumgrid"></div>
+    <div class="groups" id="sumgroups"></div>
+    <div class="row">
+      <button type="button" id="sumcopy">Copy summary</button>
+      <button type="button" id="recall">Call no-answers again</button>
+    </div>
+    <p class="status" id="sumstatus"></p>
+  </section>
+
+  <ol class="queue" id="queue"></ol>
+
+  <section class="card" id="importcard">
+    <div>
+      <div class="label">Import from screenshots</div>
+      <p class="hint" style="margin-top:6px">Pick one or more screenshots of your lead list. Your phone reads the names and numbers on its own, then you check them before loading. The first scan downloads the text reader, so give it a moment.</p>
+    </div>
+    <input type="file" id="shots" accept="image/png,image/jpeg,image/webp" multiple aria-label="Screenshots">
+    <div class="row">
+      <button type="button" id="readshots">Read screenshots</button>
+      <button type="button" id="stopread" hidden>Stop</button>
+    </div>
+    <p class="status" id="importstatus"></p>
+  </section>
+
+  <div class="settings">
+    <label class="toggle"><input type="checkbox" id="autonext"> Start the next call automatically 3 seconds after I log a result</label>
+    <label class="toggle"><input type="checkbox" id="texton"> Open a follow-up text after No answer or Left voicemail</label>
+    <div class="field" id="msgfield">
+      <label class="label" for="msgtpl">Text message ({first} becomes their first name)</label>
+      <input type="text" id="msgtpl" autocomplete="off">
+    </div>
+  </div>
+
+  <details id="editbox">
+    <summary>Edit call list</summary>
+    <div class="editor">
+      <p class="hint">Paste one per line. A name before the number is optional: <code>Jordan Lee, 425-555-0143</code></p>
+      <textarea id="listin" spellcheck="false" aria-label="Call list"></textarea>
+      <div class="row">
+        <button type="button" id="load">Load list</button>
+        <button type="button" id="copyres">Copy results</button>
+        <button type="button" id="reset">Clear outcomes</button>
+      </div>
+      <div class="confirm" id="confirmbox" hidden>
+        <span>Clear all outcomes and start from the top?</span>
+        <button type="button" id="resetyes">Yes, clear</button>
+        <button type="button" id="resetno">Cancel</button>
+      </div>
+      <p class="status" id="editstatus"></p>
+    </div>
+  </details>
+</div>
+
+<script>
+(function(){
+  const SAMPLE = `Example – Jordan Lee, (425) 555-0143
+Example – Priya Shah, 206-555-0187
+Example – Marcus Bell, 360.555.0122
+Example – Ana Torres, 425 555 0199
+Example – Sam Okafor, +1 253-555-0111`;
+  const KEY = 'calllistdialer.v1';
+  const TAGS = {talked:['Talked','t-talked'],vm:['Voicemail','t-vm'],na:['No answer','t-na'],bad:['Bad #','t-bad'],called:['Called','t-called']};
+  const DEFAULT_MSG = 'Is this {first}?';
+  const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1);
+  let state = {items:[], idx:0};
+  let pending = null; // {idx, t}
+
+  const $ = id => document.getElementById(id);
+
+  function parse(text){
+    return text.split(/\r?\n/).map(l=>l.trim()).filter(Boolean).map(line=>{
+      const m = line.match(/(\+?\d[\d\s().\-]{6,}\d)(\s*(x|ext\.?)\s*\d+)?\s*$/i);
+      if(!m) return null;
+      const raw = m[0].trim();
+      let name = line.slice(0, m.index).replace(/[,;:\-–\t(+\s]+$/,'').trim();
+      const digits = raw.replace(/(x|ext\.?)\s*\d+$/i,'').replace(/[^\d+]/g,'');
+      return {name, raw, dial: digits, outcome:null};
+    }).filter(Boolean);
+  }
+  function fmt(d){
+    const s = d.replace(/^\+?1(?=\d{10}$)/,'');
+    return /^\d{10}$/.test(s) ? `(${s.slice(0,3)}) ${s.slice(3,6)}-${s.slice(6)}` : d;
+  }
+  function save(){ try{localStorage.setItem(KEY, JSON.stringify(state))}catch(e){} }
+  function load(){
+    try{ const s = JSON.parse(localStorage.getItem(KEY)||'null'); if(s && Array.isArray(s.items)) return s; }catch(e){}
+    return null;
+  }
+
+  function render(){
+    const n = state.items.length, done = state.items.filter(i=>i.outcome).length;
+    $('progress').textContent = `${done} / ${n} done`;
+    $('barfill').style.width = n ? (done/n*100)+'%' : '0';
+    const cur = state.items[state.idx];
+    const card = $('current');
+    if(!n){
+      $('poslabel').textContent='No numbers yet'; $('who').textContent=''; $('num').textContent='Paste a list below';
+      $('callbtn').hidden = true;
+    } else if(state.idx >= n){
+      $('poslabel').textContent='Finished'; $('who').textContent='End of list';
+      $('num').textContent=`${done} of ${n} calls logged`;
+      $('callbtn').hidden = true;
+    } else {
+      $('callbtn').hidden = false;
+      $('poslabel').textContent = `Number ${state.idx+1} of ${n}`;
+      $('who').textContent = cur.name || '—';
+      $('num').textContent = fmt(cur.dial);
+      $('callbtn').href = 'tel:' + cur.dial;
+    }
+    document.querySelectorAll('#outcomes button').forEach(b=>{
+      b.setAttribute('aria-pressed', String(!!cur && cur.outcome===b.dataset.o));
+      b.disabled = !cur;
+    });
+    const q = $('queue'); q.innerHTML='';
+    state.items.forEach((it,i)=>{
+      const li = document.createElement('li');
+      if(i===state.idx) li.className='cur';
+      else if(it.outcome) li.className='done';
+      const tag = it.outcome ? `<span class="tag ${TAGS[it.outcome][1]}">${TAGS[it.outcome][0]}</span>` : '<span></span>';
+      li.innerHTML = `<span class="i">${i+1}</span><span class="n">${esc(fmt(it.dial))}${it.texted?'<span class="texted">texted</span>':''}${it.name?`<span class="nm">${esc(it.name)}</span>`:''}</span>${tag}`;
+      li.addEventListener('click',()=>{state.idx=i; pending=null; save(); render(); window.scrollTo({top:0,behavior:'smooth'})});
+      q.appendChild(li);
+    });
+    q.hidden = !n;
+    renderSummary();
+  }
+
+  // ----- End-of-list review -----
+  const GROUPS = [
+    ['talked','Answered'],
+    ['vm','Left voicemail'],
+    ['na','No answer'],
+    ['bad','Bad number'],
+    ['called','Called, no result logged'],
+    [null,'Skipped / not called'],
+  ];
+  function grouped(){
+    const g = {}; GROUPS.forEach(([k])=>g[k]=[]);
+    state.items.forEach(it=>{ (g[it.outcome||null] || g[null]).push(it); });
+    return g;
+  }
+  function renderSummary(){
+    const n = state.items.length;
+    const box = $('summary');
+    if(!n || state.idx < n){ box.hidden = true; return; }
+    box.hidden = false;
+    const g = grouped();
+    const reached = g.talked.length, dialed = n - g[null].length;
+    const texted = state.items.filter(i=>i.texted).length;
+    $('sumtitle').textContent = `${dialed} of ${n} numbers dialed`;
+    $('sumrate').textContent = dialed ? `Contact rate: ${Math.round(reached/dialed*100)}% (${reached} answered)` + (texted?` · ${texted} follow-up texts opened`:'') : 'No calls were made.';
+    $('sumgrid').innerHTML = [['talked','Answered'],['vm','Voicemail'],['na','No answer'],['bad','Bad number']]
+      .map(([k,l])=>`<div class="stat k-${k}"><b>${g[k].length}</b><span>${l}</span></div>`).join('');
+    $('sumgroups').innerHTML = GROUPS.filter(([k])=>g[k].length).map(([k,l])=>
+      `<div class="group"><h3>${l} · ${g[k].length}</h3><ul>${g[k].map(it=>
+        `<li><span>${esc(it.name||'No name')}${it.texted?'<span class="texted">texted</span>':''}</span><span class="p">${esc(fmt(it.dial))}</span></li>`).join('')}</ul></div>`).join('');
+    $('recall').hidden = !(g.na.length + g.vm.length);
+  }
+  function summaryText(){
+    const g = grouped(), n = state.items.length;
+    const lines = [`Call results: ${n - g[null].length} of ${n} dialed, ${g.talked.length} answered`];
+    GROUPS.forEach(([k,l])=>{ if(!g[k].length) return;
+      lines.push('', `${l} (${g[k].length})`);
+      g[k].forEach(it=>lines.push(`- ${it.name||'No name'} ${fmt(it.dial)}${it.texted?' (texted)':''}`));
+    });
+    return lines.join('\n');
+  }
+  function esc(s){return s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+  function status(t){ $('status').textContent=t; }
+
+  function advance(){
+    let i = state.idx+1;
+    while(i < state.items.length && state.items[i].outcome) i++;
+    state.idx = i; save(); render();
+  }
+
+  $('callbtn').addEventListener('click',()=>{
+    if(autoTimer) stopAuto();
+    if(state.idx < state.items.length){ pending = {kind:'call', idx:state.idx, t:Date.now()}; status('Calling… come back here when you hang up.'); }
+  });
+
+  // When the person returns from the phone or Messages app.
+  function onReturn(){
+    if(document.visibilityState!=='visible' || !pending) return;
+    const p = pending;
+    if(Date.now()-p.t < 2500) return; // the other app never really opened
+    pending = null;
+    if(p.kind==='sms'){
+      if(state.idx >= state.items.length){ status(''); return; }
+      status('Text done. Next number is ready.');
+      if($('autonext').checked) startAuto(); else $('callbtn').focus({preventScroll:true});
+      return;
+    }
+    // Back from a call: stay on this person so the result is logged against them.
+    const it = state.items[p.idx];
+    if(it && !it.outcome){ it.outcome='called'; save(); }
+    if(state.idx !== p.idx){ state.idx = p.idx; }
+    render();
+    status('How did it go? Tap a result below to move on.');
+    const first = document.querySelector('#outcomes button');
+    if(first) first.focus({preventScroll:true});
+  }
+
+  function firstName(name){
+    const clean = (name||'').replace(/^Example\s*[–-]\s*/i,'').trim();
+    const w = clean.split(/[\s,]+/)[0] || '';
+    return w ? w.charAt(0).toUpperCase() + w.slice(1).toLowerCase() : '';
+  }
+  function buildMsg(it){
+    const tpl = ($('msgtpl').value || DEFAULT_MSG);
+    const f = firstName(it.name);
+    if(!f) return 'Is this the right number?';
+    return tpl.replace(/\{first\}/gi, f);
+  }
+  function openText(it){
+    const body = encodeURIComponent(buildMsg(it));
+    const url = 'sms:' + it.dial + (isIOS ? '&body=' : '?body=') + body;
+    pending = {kind:'sms', t:Date.now()};
+    it.texted = true; save();
+    window.location.href = url;
+  }
+
+  // Optional auto-start: counts down, then opens the phone dialer for the next number.
+  let autoTimer = null;
+  function stopAuto(msg){
+    clearInterval(autoTimer); autoTimer=null; $('cancelauto').hidden=true;
+    if(msg) status(msg);
+  }
+  function startAuto(){
+    const it = state.items[state.idx]; if(!it) return;
+    let n = 3; $('cancelauto').hidden=false;
+    status(`Calling ${it.name || fmt(it.dial)} in ${n}…`);
+    autoTimer = setInterval(()=>{
+      n--;
+      if(n>0){ status(`Calling ${it.name || fmt(it.dial)} in ${n}…`); return; }
+      stopAuto();
+      pending = {kind:'call', idx:state.idx, t:Date.now()};
+      status('Opening dialer… if nothing happens, tap Call.');
+      try{ window.location.href = 'tel:' + it.dial; }catch(e){ status('Tap Call to dial.'); }
+    },1000);
+  }
+  $('cancelauto').addEventListener('click',()=>stopAuto('Auto-call canceled. Tap Call when ready.'));
+  try{ $('autonext').checked = localStorage.getItem(KEY+'.auto')==='1'; }catch(e){}
+  $('autonext').addEventListener('change',e=>{
+    try{ localStorage.setItem(KEY+'.auto', e.target.checked?'1':'0'); }catch(err){}
+    if(!e.target.checked) stopAuto();
+  });
+
+  // Follow-up text settings
+  try{
+    const t = localStorage.getItem(KEY+'.text');
+    $('texton').checked = t===null ? true : t==='1';
+    $('msgtpl').value = localStorage.getItem(KEY+'.msg') || DEFAULT_MSG;
+  }catch(e){ $('texton').checked = true; $('msgtpl').value = DEFAULT_MSG; }
+  const syncField = ()=>{ $('msgfield').hidden = !$('texton').checked; };
+  syncField();
+  $('texton').addEventListener('change',e=>{ try{localStorage.setItem(KEY+'.text', e.target.checked?'1':'0')}catch(err){} syncField(); });
+  $('msgtpl').addEventListener('input',e=>{ try{localStorage.setItem(KEY+'.msg', e.target.value)}catch(err){} });
+
+  $('sumcopy').addEventListener('click',()=>copy(summaryText(), t=>$('sumstatus').textContent=t));
+  $('recall').addEventListener('click',()=>{
+    state.items.forEach(it=>{ if(it.outcome==='na'||it.outcome==='vm') it.outcome=null; });
+    const i = state.items.findIndex(it=>!it.outcome);
+    state.idx = i<0 ? state.items.length : i; pending=null; save(); render();
+    status('Round two: no-answers and voicemails are back in the queue.');
+    window.scrollTo({top:0,behavior:'smooth'});
+  });
+
+  // Screenshot import: reads text on this phone with Tesseract (no account, nothing uploaded)
+  (function(){
+    const out = t => $('importstatus').textContent = t;
+    let worker = null, stopped = false;
+    function loadLib(){
+      if(window.Tesseract) return Promise.resolve();
+      return new Promise((ok,fail)=>{
+        const s=document.createElement('script');
+        s.src='https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
+        s.onload=ok; s.onerror=()=>fail(new Error('load'));
+        document.head.appendChild(s);
+      });
+    }
+    function rowsFrom(text){
+      const re=/(\+?1[\s.\-]?)?\(?\d{3}\)?[\s.\-]?\d{3}[\s.\-]?\d{4}/;
+      const seen=new Set(), rows=[];
+      text.split(/\n/).forEach(line=>{
+        const m=line.match(re); if(!m) return;
+        const digits=m[0].replace(/\D/g,'').replace(/^1(?=\d{10}$)/,'');
+        if(digits.length!==10 || seen.has(digits)) return;
+        seen.add(digits);
+        const name=line.replace(m[0],' ').replace(/[^A-Za-zÀ-ɏ'\- ]+/g,' ').replace(/\s+/g,' ').trim()
+          .split(' ').filter(w=>w.length>1 || /^[A-Z]$/.test(w)).join(' ');
+        rows.push({name, phone:digits});
+      });
+      return rows;
+    }
+    $('stopread').addEventListener('click',async ()=>{
+      stopped=true; if(worker){ try{await worker.terminate();}catch(e){} worker=null; }
+      out('Stopped.'); $('readshots').disabled=false; $('stopread').hidden=true;
+    });
+    $('readshots').addEventListener('click', async ()=>{
+      const files = Array.from($('shots').files || []);
+      if(!files.length){ out('Choose at least one screenshot first.'); return; }
+      stopped=false;
+      $('readshots').disabled = true; $('stopread').hidden = false;
+      try{
+        out('Loading the text reader…');
+        await loadLib();
+        if(stopped) return;
+        worker = await Tesseract.createWorker('eng');
+        let all=[];
+        for(let i=0;i<files.length;i++){
+          if(stopped) return;
+          out(`Reading screenshot ${i+1} of ${files.length}…`);
+          const { data } = await worker.recognize(files[i]);
+          all = all.concat(rowsFrom(data.text||''));
+        }
+        const seen=new Set(); all=all.filter(r=>!seen.has(r.phone)&&seen.add(r.phone));
+        if(!all.length){ out('No phone numbers found. Try a sharper screenshot, zoomed in on the list.'); return; }
+        $('listin').value = all.map(r=>(r.name? r.name+', ':'')+r.phone).join('\n');
+        $('editbox').open = true;
+        out(`Found ${all.length} numbers. Check every digit against your screenshot, fix anything off, then tap Load list.`);
+        $('listin').scrollIntoView({behavior:'smooth', block:'center'});
+      }catch(e){
+        if(!stopped) out('Couldn\'t read the screenshots. Check your internet connection for the first scan, or paste the list instead.');
+      }finally{
+        if(worker){ try{await worker.terminate();}catch(e){} worker=null; }
+        $('readshots').disabled = false; $('stopread').hidden = true;
+      }
+    });
+  })();
+  document.addEventListener('visibilitychange', onReturn);
+  window.addEventListener('focus', onReturn);
+  window.addEventListener('pageshow', onReturn);
+
+  $('outcomes').addEventListener('click',e=>{
+    const b = e.target.closest('button'); if(!b) return;
+    const it = state.items[state.idx]; if(!it) return;
+    stopAuto();
+    it.outcome = b.dataset.o; pending=null; save();
+    const wantText = $('texton').checked && (it.outcome==='na' || it.outcome==='vm') && !it.texted;
+    advance();
+    if(wantText){
+      status(`Logged: ${TAGS[it.outcome][0]}. Opening Messages… tap Send, then come back.`);
+      openText(it);
+      return;
+    }
+    status(`Logged: ${TAGS[it.outcome][0]}`);
+    if($('autonext').checked && state.idx < state.items.length) startAuto();
+  });
+  $('skip').addEventListener('click',()=>{ pending=null; if(state.idx<state.items.length){state.idx++; save(); render(); status('');} });
+  $('prev').addEventListener('click',()=>{ pending=null; if(state.idx>0){state.idx--; save(); render(); status('');} });
+
+  async function copy(text, out){
+    try{ await navigator.clipboard.writeText(text); out('Copied'); }
+    catch(e){ out('Copy blocked here. Select the text and copy it manually.'); }
+  }
+  $('copynum').addEventListener('click',()=>{
+    const it = state.items[state.idx]; if(!it) return;
+    copy(it.dial, status);
+    const r = document.createRange(); r.selectNodeContents($('num'));
+    const s = getSelection(); s.removeAllRanges(); s.addRange(r);
+  });
+  $('copyres').addEventListener('click',()=>{
+    const lines = state.items.map(it=>[it.name, fmt(it.dial), it.outcome?TAGS[it.outcome][0]:'Not called'].join('\t'));
+    copy(['Name\tNumber\tResult',...lines].join('\n'), t=>$('editstatus').textContent=t);
+  });
+  $('load').addEventListener('click',()=>{
+    const items = parse($('listin').value);
+    if(!items.length){ $('editstatus').textContent='No phone numbers found. Put one number on each line.'; return; }
+    state = {items, idx:0, text:$('listin').value}; pending=null; save(); render();
+    $('editstatus').textContent = `Loaded ${items.length} numbers.`; status('');
+    $('editbox').open=false; window.scrollTo({top:0,behavior:'smooth'});
+  });
+  $('reset').addEventListener('click',()=>{ $('confirmbox').hidden=false; });
+  $('resetno').addEventListener('click',()=>{ $('confirmbox').hidden=true; });
+  $('resetyes').addEventListener('click',()=>{
+    state.items.forEach(i=>{i.outcome=null; i.texted=false;}); state.idx=0; pending=null; save(); render();
+    $('confirmbox').hidden=true; $('editstatus').textContent='Outcomes cleared.';
+  });
+
+  const saved = load();
+  if(saved){ state = saved; $('listin').value = saved.text || saved.items.map(i=>(i.name?i.name+', ':'')+i.raw).join('\n'); }
+  else { $('listin').value = SAMPLE; state = {items:parse(SAMPLE), idx:0, text:SAMPLE}; }
+  render();
+})();
+</script>
+
+</body>
+</html>
