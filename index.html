@@ -123,7 +123,7 @@ body{margin:0}
     <button type="button" id="updatebtn">Update now</button>
   </div>
   <header>
-    <h1>Call List Dialer <span class="ver">v11</span></h1>
+    <h1>Call List Dialer <span class="ver">v12</span></h1>
     <span class="progress" id="progress">0 / 0</span>
   </header>
   <div class="bar"><i id="barfill"></i></div>
@@ -361,6 +361,14 @@ Example – Sam Okafor, +1 253-555-0111`;
   }
 
   // ---------- result screen ----------
+  function resultHref(i, o){
+    const it = state.items[i]; if(!it) return '#';
+    const nxt = state.items[nextOpenIndex(i+1)];
+    if(o==='talked') return $('dictsc').checked ? noteShortcutUrl() : '#';
+    if($('texton').checked && (o==='na'||o==='vm')) return $('autosend').checked ? shortcutUrl(it) : smsUrl(it);
+    if(nxt && $('autonext').checked) return telUrl(nxt);
+    return '#';
+  }
   function showResult(i){
     const it = state.items[i]; if(!it) return closeSheet();
     state.open = i; save();
@@ -376,13 +384,7 @@ Example – Sam Okafor, +1 253-555-0111`;
     $('h-vm').textContent = textOn ? 'opens a text' : after;
     $('h-na').textContent = textOn ? 'opens a text' : after;
     // The tap on a result is what opens the next app, so iPhones treat it like tapping Call.
-    document.querySelectorAll('#s-result .rbtn').forEach(a=>{
-      const o = a.dataset.o;
-      if(o==='talked') a.href = $('dictsc').checked ? noteShortcutUrl() : '#';
-      else if(textOn && (o==='na'||o==='vm')) a.href = $('autosend').checked ? shortcutUrl(it) : smsUrl(it);
-      else if(nxt && dialOn) a.href = telUrl(nxt);
-      else a.href = '#';
-    });
+    document.querySelectorAll('#s-result .rbtn').forEach(a=>{ a.href = resultHref(i, a.dataset.o); });
     $('s-result').hidden = false; $('s-next').hidden = true; $('s-note').hidden = true;
     $('sheet').hidden = false; document.body.style.overflow='hidden';
     $('sheet').scrollTop = 0;
@@ -422,6 +424,7 @@ Example – Sam Okafor, +1 253-555-0111`;
   document.querySelectorAll('#s-result .rbtn').forEach(b=>b.addEventListener('click',e=>{
     const i = state.open; const it = state.items[i];
     if(!it){ e.preventDefault(); return closeSheet(); }
+    b.setAttribute('href', resultHref(i, b.dataset.o));   // always current settings, set before the tap opens it
     const goesSomewhere = b.getAttribute('href') !== '#';
     if(!goesSomewhere) e.preventDefault();
     it.outcome = b.dataset.o;
@@ -675,7 +678,7 @@ Example – Sam Okafor, +1 253-555-0111`;
   })();
 
   // ---------- update check: compares this page with the copy on the site ----------
-  const VERSION = 11;
+  const VERSION = 12;
   (async function(){
     try{
       const base = location.pathname;
