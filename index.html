@@ -129,7 +129,7 @@ body{margin:0}
     <button type="button" id="updatebtn">Update now</button>
   </div>
   <header>
-    <h1>Call List Dialer <span class="ver">v13</span></h1>
+    <h1>Call List Dialer <span class="ver">v14</span></h1>
     <span class="progress" id="progress">0 / 0</span>
   </header>
   <div class="bar"><i id="barfill"></i></div>
@@ -180,7 +180,7 @@ body{margin:0}
   <section class="card" id="importcard">
     <div>
       <div class="label">Import from screenshots</div>
-      <p class="hint" style="margin-top:6px">Pick one or more screenshots of your lead list. Your phone reads the names and numbers on its own, then you check them before loading. The first scan downloads the text reader, so give it a moment.</p>
+      <p class="hint" style="margin-top:6px">Pick screenshots or photos of your lead list. Your phone reads the names and numbers on its own, then you check them before loading. The first scan downloads the text reader, so give it a moment.</p>
     </div>
     <input type="file" id="shots" accept="image/png,image/jpeg,image/webp" multiple aria-label="Screenshots">
     <div class="row">
@@ -642,6 +642,22 @@ Example – Sam Okafor, +1 253-555-0111`;
         document.head.appendChild(s);
       });
     }
+    // ---- name cleanup: drop checkbox misreads, split joined first/last names ----
+    const CHECKBOX=/^(O|OO|Q|QO|C1|Ol|0|©|\[\]|\(\)|O\)|OO\))$/;
+    const JUNK=/^[OQCcoDdIl1|iT©()\[\].,:;'"\-_]{1,3}$/;
+    function splitJoined(w){
+      return w.replace(/([a-z])([A-Z])/g,(m,lo,up,off)=>/(^|[^A-Za-z])(Mc|Mac)$/.test(w.slice(0,off+1)) ? m : lo+' '+up);
+    }
+    function cleanName(before){
+      let toks=before.replace(/[^A-Za-zÀ-ɏ'\- ]+/g,' ').split(/\s+/).filter(Boolean);
+      let lastBox=-1; toks.forEach((t,k)=>{ if(CHECKBOX.test(t)) lastBox=k; });
+      if(lastBox>=0) toks=toks.slice(lastBox+1);
+      while(toks.length && (JUNK.test(toks[0]) || toks[0].length<2)) toks.shift();
+      // stray lowercase bits before a capitalized name ("uu Noor Haddad")
+      while(toks.length>1 && /^[a-z]{1,2}$/.test(toks[0]) && /^[A-Z]/.test(toks[1])) toks.shift();
+      toks=toks.filter(t=>t.length>1 || /^[A-Z]$/.test(t));
+      return toks.map(splitJoined).join(' ').replace(/^[\s'\-]+|[\s'\-]+$/g,'');
+    }
     function rowsFrom(text){
       const re=/(\+?1[\s.\-]?)?\(?\d{3}\)?[\s.\-]?\d{3}[\s.\-]?\d{4}/;
       const seen=new Set(), rows=[];
@@ -650,11 +666,41 @@ Example – Sam Okafor, +1 253-555-0111`;
         const digits=m[0].replace(/\D/g,'').replace(/^1(?=\d{10}$)/,'');
         if(digits.length!==10 || seen.has(digits)) return;
         seen.add(digits);
-        const name=line.replace(m[0],' ').replace(/[^A-Za-zÀ-ɏ'\- ]+/g,' ').replace(/\s+/g,' ').trim()
-          .split(' ').filter(w=>w.length>1 || /^[A-Z]$/.test(w)).join(' ');
-        rows.push({name, phone:digits});
+        rows.push({name: cleanName(line.slice(0, m.index)), phone:digits});
       });
       return rows;
+    }
+    // ---- image cleanup: evens out glare and the wavy pattern from photographing a screen ----
+    function loadImage(file){
+      return new Promise((ok,fail)=>{ const u=URL.createObjectURL(file), im=new Image();
+        im.onload=()=>{ URL.revokeObjectURL(u); ok(im); }; im.onerror=()=>{ URL.revokeObjectURL(u); fail(new Error('image')); }; im.src=u; });
+    }
+    function boxBlur(src,w,h,r){
+      let a=src, b=new Float32Array(w*h);
+      for(let pass=0;pass<3;pass++){
+        for(let y=0;y<h;y++){ const o=y*w; let acc=0;
+          for(let k=-r-1;k<r;k++) acc+=a[o+Math.min(w-1,Math.max(0,k))];
+          for(let x=0;x<w;x++){ acc+=a[o+Math.min(w-1,x+r)]-a[o+Math.max(0,x-r-1)]; b[o+x]=acc/(2*r+1); } }
+        const c=new Float32Array(w*h);
+        for(let x=0;x<w;x++){ let acc=0;
+          for(let k=-r-1;k<r;k++) acc+=b[Math.min(h-1,Math.max(0,k))*w+x];
+          for(let y=0;y<h;y++){ acc+=b[Math.min(h-1,y+r)*w+x]-b[Math.max(0,y-r-1)*w+x]; c[y*w+x]=acc/(2*r+1); } }
+        a=c;
+      }
+      return a;
+    }
+    async function prepImage(file){
+      const im = await loadImage(file);
+      const w = Math.min(Math.max(im.naturalWidth,1600),2200), h = Math.round(im.naturalHeight*w/im.naturalWidth);
+      const cv=document.createElement('canvas'); cv.width=w; cv.height=h;
+      const ctx=cv.getContext('2d'); ctx.imageSmoothingEnabled=true; ctx.imageSmoothingQuality='high';
+      ctx.drawImage(im,0,0,w,h);
+      const img=ctx.getImageData(0,0,w,h), px=img.data, g=new Float32Array(w*h);
+      for(let k=0,p=0;k<g.length;k++,p+=4) g[k]=0.299*px[p]+0.587*px[p+1]+0.114*px[p+2];
+      const bg=boxBlur(g,w,h,Math.max(1,Math.round(10*w/1600)));
+      for(let k=0,p=0;k<g.length;k++,p+=4){ const v=Math.max(0,Math.min(255,g[k]/(bg[k]+1)*235)); px[p]=px[p+1]=px[p+2]=v; px[p+3]=255; }
+      ctx.putImageData(img,0,0);
+      return cv;
     }
     $('stopread').addEventListener('click',async ()=>{
       stopped=true; if(worker){ try{await worker.terminate();}catch(e){} worker=null; }
@@ -670,11 +716,14 @@ Example – Sam Okafor, +1 253-555-0111`;
         await loadLib();
         if(stopped) return;
         worker = await Tesseract.createWorker('eng');
+        await worker.setParameters({ tessedit_pageseg_mode: '6' });   // read the table row by row
         let all=[];
         for(let i=0;i<files.length;i++){
           if(stopped) return;
           out(`Reading screenshot ${i+1} of ${files.length}…`);
-          const { data } = await worker.recognize(files[i]);
+          let src = files[i];
+          try{ src = await prepImage(files[i]); }catch(e){ /* fall back to the original picture */ }
+          const { data } = await worker.recognize(src);
           all = all.concat(rowsFrom(data.text||''));
         }
         const seen=new Set(); all=all.filter(r=>!seen.has(r.phone)&&seen.add(r.phone));
@@ -693,7 +742,7 @@ Example – Sam Okafor, +1 253-555-0111`;
   })();
 
   // ---------- update check: compares this page with the copy on the site ----------
-  const VERSION = 13;
+  const VERSION = 14;
   (async function(){
     try{
       const base = location.pathname;
