@@ -129,7 +129,7 @@ body{margin:0}
     <button type="button" id="updatebtn">Update now</button>
   </div>
   <header>
-    <h1>Call List Dialer <span class="ver">v19</span></h1>
+    <h1>Call List Dialer <span class="ver">v20</span></h1>
     <span class="progress" id="progress">0 / 0</span>
   </header>
   <div class="bar"><i id="barfill"></i></div>
@@ -682,6 +682,9 @@ Example – Sam Okafor, +1 253-555-0111`;
       });
     }
     function cleanWord(t){ return t.replace(/[^A-Za-zÀ-ɏ'\-]/g,'').replace(/^['\-]+|['\-]+$/g,''); }
+    // field labels the Salesforce app prints beside values; never part of a person's name
+    const LABELS=new Set(['name','first','last','full','home','phone','mobile','cell','work','office','other','email','mail','age','status','lead','leads','source','owner','created','date','record','count','title','company','account','city','state','zip','address','type','contact','number','phones','birthdate','dob','gender','school','grad','year']);
+    function isLabel(w){ return LABELS.has(w.text.toLowerCase().replace(/[^a-z]/g,'')); }
     function isNameWord(w){
       const c=cleanWord(w.text);
       if(!c || CHECKBOX.test(w.text.trim()) || JUNK.test(w.text.trim())) return false;
@@ -732,7 +735,7 @@ Example – Sam Okafor, +1 253-555-0111`;
       }
       const tol = 1.5*hMed;
       function nameIn(ws, f){
-        let toks=ws.filter(w=>!f.pw.has(w) && isNameWord(w));
+        let toks=ws.filter(w=>!f.pw.has(w) && isNameWord(w) && !isLabel(w));
         if(region){
           // a tilted photo shifts columns sideways; follow the drift seen in this row's phone position
           const shift=(f.px0-phoneX)*(phoneX ? region.lo/phoneX : 0);
@@ -749,14 +752,21 @@ Example – Sam Okafor, +1 253-555-0111`;
       const used=new Set(), rows=[], seen=new Set();
       found.sort((a,b)=>a.cy-b.cy).forEach(f=>{
         if(seen.has(f.digits)) return; seen.add(f.digits);
-        let name=nameIn(f.ws,f);
+        let name=nameIn(f.ws,f), nameFrom=name ? 'line' : '';
         if(!name){
-          // the reader split this row in two: take the name line closest in height
-          const cand=L.filter(ws=>!found.some(g=>g.ws===ws) && !used.has(ws))
-            .map(ws=>({ws, d:Math.abs(median(ws.map(w=>w.cy))-f.cy)})).filter(c=>c.d<hMed*1.2).sort((a,b)=>a.d-b.d)[0];
-          if(cand){ const n=nameIn(cand.ws,f); if(n){ name=n; used.add(cand.ws); } }
+          // no name on the phone's own line: either the reader split the row in two (name line at the same height),
+          // or it's a card layout with the name on the line just above the phone
+          const others=L.filter(ws=>!found.some(g=>g.ws===ws) && !used.has(ws))
+            .map(ws=>({ws, dy:median(ws.map(w=>w.cy))-f.cy}));
+          const sameRow=others.filter(c=>Math.abs(c.dy)<hMed*1.2).sort((a,b)=>Math.abs(a.dy)-Math.abs(b.dy));
+          // the closest line above that isn't below the previous phone (so a card never borrows the name from the record above)
+          const prevPhone=found.filter(g=>g.cy<f.cy-hMed*0.5).map(g=>g.cy).sort((a,b)=>b-a)[0];
+          const above=others.filter(c=>c.dy<0 && c.dy>-hMed*4 && (prevPhone===undefined || f.cy+c.dy>prevPhone+hMed*0.5)).sort((a,b)=>b.dy-a.dy);
+          for(const c of [...sameRow, ...above]){
+            const n=nameIn(c.ws, {...f, pw:new Set()}); if(n){ name=n; nameFrom='nearby'; used.add(c.ws); break; }
+          }
         }
-        rows.push({name, phone:f.digits, cy:f.cy, h:hMed});
+        rows.push({name, nameFrom, phone:f.digits, cy:f.cy, h:hMed});
       });
       return rows;
     }
@@ -780,7 +790,7 @@ Example – Sam Okafor, +1 253-555-0111`;
         rest.forEach(w=>{ spans.push([s.length, s.length+w.text.length, w]); s+=w.text+' '; });
         const m=s.match(PHONE_RE); let phone='', pw=new Set();
         if(m){ const d=m[0].replace(/\D/g,'').replace(/^1(?=\d{10}$)/,''); if(d.length===10){ phone=d; spans.filter(([p,q])=>q>m.index && p<m.index+m[0].length).forEach(x=>pw.add(x[2])); } }
-        const nameToks=rest.filter(w=>!pw.has(w) && isNameWord(w) && !HDRWORDS.has(w.text.toLowerCase().replace(/[^a-z]/g,'')));
+        const nameToks=rest.filter(w=>!pw.has(w) && isNameWord(w) && !isLabel(w) && !HDRWORDS.has(w.text.toLowerCase().replace(/[^a-z]/g,'')));
         const name=fixCapitalI(nameToks.map(w=>splitJoined(cleanWord(w.text))).join(' ').split(' ').filter(Boolean)).join(' ').trim();
         if(!name && !phone) return;
         out.push({num: numW ? parseInt(numW.text,10) : null, name, phone, cy, h:hMed});
@@ -957,7 +967,7 @@ Example – Sam Okafor, +1 253-555-0111`;
         function addRows(rows, fromVideo){
           let added=0, dup=0;
           rows.forEach(r=>{
-            if(fromVideo){ const e=votes.get(r.phone)||{count:0,names:new Map()}; e.count++; if(r.name) e.names.set(r.name,(e.names.get(r.name)||0)+1); votes.set(r.phone,e); }
+            if(fromVideo){ const e=votes.get(r.phone)||{count:0,names:new Map()}; e.count++; if(r.name && r.nameFrom==='line') e.names.set(r.name,(e.names.get(r.name)||0)+1); votes.set(r.phone,e); }
             if(seen.has(r.phone)){ dup++; return; } seen.add(r.phone); all.push(r); added++;
           });
           return {added, dup};
@@ -998,7 +1008,7 @@ Example – Sam Okafor, +1 253-555-0111`;
             const e=votes.get(r.phone); if(!e || e.count>1) return true;
             return ![...votes.entries()].some(([p,o])=>p!==r.phone && o.count>=2 && near(p,r.phone));
           });
-          all.forEach(r=>{ const e=votes.get(r.phone); if(e && e.names.size){ r.name=[...e.names.entries()].sort((x,y)=>y[1]-x[1]||y[0].length-x[0].length)[0][0]; } });
+          all.forEach(r=>{ const e=votes.get(r.phone); if(e && e.names.size){ r.name=[...e.names.entries()].sort((x,y)=>y[1]-x[1]||y[0].length-x[0].length)[0][0]; r.nameFrom='line'; } });
         }
         // names and phones on separate screenshots: join them by row number
         let matched=0;
@@ -1009,7 +1019,7 @@ Example – Sam Okafor, +1 253-555-0111`;
           merged.forEach(e=>{
             if(!e.phone || placed.has(e.phone)) return;
             const base=byPhone.get(e.phone) || {phone:e.phone, name:''};
-            if(e.name && !base.name){ base.name=e.name; matched++; }
+            if(e.name && (!base.name || base.nameFrom==='nearby') && base.name!==e.name){ base.name=e.name; base.nameFrom='row'; matched++; }
             ordered.push(base); placed.add(e.phone);
           });
           all.forEach(r=>{ if(!placed.has(r.phone)) ordered.push(r); });
@@ -1034,7 +1044,7 @@ Example – Sam Okafor, +1 253-555-0111`;
   })();
 
   // ---------- update check: compares this page with the copy on the site ----------
-  const VERSION = 19;
+  const VERSION = 20;
   (async function(){
     try{
       const base = location.pathname;
