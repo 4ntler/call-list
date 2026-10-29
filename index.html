@@ -107,6 +107,13 @@ body{margin:0}
 .big .r-talked{border-color:var(--go)} .big .r-vm{border-color:var(--accent)} .big .r-na{border-color:var(--warn)} .big .r-bad{border-color:var(--bad)}
 .sheet .row button,.sheet .row a{flex:1 1 auto;text-align:center}
 .ghost{display:inline-flex;align-items:center;justify-content:center;font-weight:600;border:1px solid var(--line);background:var(--surface);color:var(--fg);border-radius:10px;padding:10px 14px;text-decoration:none}
+.notebox{width:100%;min-height:130px;font:inherit;font-size:1rem;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--surface);color:var(--fg);resize:vertical}
+.notebox:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.mic{display:inline-flex;align-items:center;gap:8px}
+.mic[aria-pressed="true"]{background:var(--bad);color:#fff;border-color:var(--bad)}
+.rem{border:1px solid var(--accent);border-radius:10px;padding:10px 12px;font-size:.92rem}
+.rem b{display:block;font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;color:var(--accent);margin-bottom:2px}
+.note{display:block;font-size:.82rem;color:var(--muted);margin-top:1px}
 .nextbox{border-top:1px solid var(--line);padding-top:14px;display:flex;flex-direction:column;gap:6px}
 </style>
 
@@ -116,7 +123,7 @@ body{margin:0}
     <button type="button" id="updatebtn">Update now</button>
   </div>
   <header>
-    <h1>Call List Dialer <span class="ver">v7</span></h1>
+    <h1>Call List Dialer <span class="ver">v8</span></h1>
     <span class="progress" id="progress">0 / 0</span>
   </header>
   <div class="bar"><i id="barfill"></i></div>
@@ -218,6 +225,22 @@ body{margin:0}
         <button type="button" id="s-close">Close without logging</button>
       </div>
     </div>
+    <!-- After Talked: quick note -->
+    <div id="s-note" class="sheet-in" style="margin:0" hidden>
+      <div>
+        <div class="label">Call note</div>
+        <h2 id="note-who"></h2>
+        <p class="hint">Say or type a short note. Saying "remind me" or "reminder" makes a reminder from the words after it.</p>
+      </div>
+      <textarea class="notebox" id="notetext" aria-label="Call note" placeholder="Interested in 68W, wants info sent. Remind me to call him back Friday at 3 pm."></textarea>
+      <div class="row">
+        <button type="button" class="mic" id="micbtn" aria-pressed="false">Start dictation</button>
+      </div>
+      <p class="status" id="micstatus"></p>
+      <div class="rem" id="remprev" hidden><b>Reminder</b><span id="remtext"></span></div>
+      <a class="call" id="notesave" href="#">Save note</a>
+    </div>
+
     <!-- After the follow-up text -->
     <div id="s-next" class="sheet-in" style="margin:0" hidden>
       <div>
@@ -351,18 +374,19 @@ Example – Sam Okafor, +1 253-555-0111`;
     const textOn = $('texton').checked, dialOn = $('autonext').checked;
     const nxt = state.items[nextOpenIndex(i+1)];
     const after = nxt && dialOn ? 'then calls next' : (nxt ? 'then shows next' : 'then finishes');
-    $('h-talked').textContent = after;
+    $('h-talked').textContent = 'add a note';
     $('h-bad').textContent = after;
     $('h-vm').textContent = textOn ? 'opens a text' : after;
     $('h-na').textContent = textOn ? 'opens a text' : after;
     // The tap on a result is what opens the next app, so iPhones treat it like tapping Call.
     document.querySelectorAll('#s-result .rbtn').forEach(a=>{
       const o = a.dataset.o;
-      if(textOn && (o==='na'||o==='vm')) a.href = $('autosend').checked ? shortcutUrl(it) : smsUrl(it);
+      if(o==='talked') a.href = '#';
+      else if(textOn && (o==='na'||o==='vm')) a.href = $('autosend').checked ? shortcutUrl(it) : smsUrl(it);
       else if(nxt && dialOn) a.href = telUrl(nxt);
       else a.href = '#';
     });
-    $('s-result').hidden = false; $('s-next').hidden = true;
+    $('s-result').hidden = false; $('s-next').hidden = true; $('s-note').hidden = true;
     $('sheet').hidden = false; document.body.style.overflow='hidden';
     $('sheet').scrollTop = 0;
   }
@@ -384,7 +408,7 @@ Example – Sam Okafor, +1 253-555-0111`;
       $('s-nextbox').hidden = true;
     }
     state.open = null; save();
-    $('s-result').hidden = true; $('s-next').hidden = false;
+    $('s-result').hidden = true; $('s-next').hidden = false; $('s-note').hidden = true;
     $('sheet').hidden = false; document.body.style.overflow='hidden';
     $('sheet').scrollTop = 0;
   }
@@ -413,6 +437,12 @@ Example – Sam Okafor, +1 253-555-0111`;
       setTimeout(()=>showNext(i), 0);   // the link itself opens Messages or the shortcut
       return;
     }
+    if(it.outcome==='talked'){
+      save(); render();
+      showNote(i);
+      startDictation();   // starts from this tap, which iPhones require for the microphone
+      return;
+    }
     save(); render();
     if(nxt && $('autonext').checked){
       const n = state.idx;
@@ -428,6 +458,96 @@ Example – Sam Okafor, +1 253-555-0111`;
 
   $('skip').addEventListener('click',()=>{ if(state.idx<state.items.length){state.idx++; save(); render(); status('');} });
   $('prev').addEventListener('click',()=>{ if(state.idx>0){state.idx--; save(); render(); status('');} });
+
+  // ---------- call note + reminder ----------
+  // "remind me (to) ..." / "reminder: ..." -> the words after it, up to the end of that sentence
+  function findReminder(text){
+    const m = (text||'').match(/\b(?:remind me(?: to)?|reminder(?: to)?)\s*[:,\-]?\s+([^.!?\n]+)/i);
+    return m ? m[1].trim() : '';
+  }
+  function reminderTitle(it, r){
+    const who = displayName(it) || fmt(it.dial);
+    return `${r.charAt(0).toUpperCase()+r.slice(1)} (${who})`;
+  }
+  function reminderUrl(it, r){
+    const back = location.href.split('#')[0];
+    return 'shortcuts://x-callback-url/run-shortcut?name=' + encodeURIComponent('Dialer Reminder')
+      + '&input=text&text=' + encodeURIComponent(reminderTitle(it, r))
+      + '&x-success=' + encodeURIComponent(back + '#remsaved')
+      + '&x-cancel=' + encodeURIComponent(back + '#remfail')
+      + '&x-error=' + encodeURIComponent(back + '#remfail');
+  }
+  function noteTarget(){ return state.items[state.noteFor]; }
+  function refreshNote(){
+    const it = noteTarget(); if(!it) return;
+    const r = findReminder($('notetext').value);
+    $('remprev').hidden = !r;
+    $('remtext').textContent = r ? reminderTitle(it, r) : '';
+    const nxt = state.items[state.idx];
+    const dial = nxt && $('autonext').checked;
+    const a = $('notesave');
+    if(r){ a.href = reminderUrl(it, r); a.textContent = dial ? 'Save, add reminder, call next' : 'Save and add reminder'; }
+    else if(dial){ a.href = telUrl(nxt); a.textContent = 'Save and call next'; }
+    else { a.href = '#'; a.textContent = nxt ? 'Save note' : 'Save and finish'; }
+  }
+  function showNote(i){
+    const it = state.items[i];
+    state.noteFor = i; state.open = null; save();
+    $('note-who').textContent = `Talked with ${displayName(it) || fmt(it.dial)}`;
+    $('notetext').value = it.note || '';
+    $('micstatus').textContent = '';
+    refreshNote();
+    $('s-result').hidden = true; $('s-next').hidden = true; $('s-note').hidden = false;
+    $('sheet').hidden = false; document.body.style.overflow='hidden';
+    $('sheet').scrollTop = 0;
+  }
+  $('notetext').addEventListener('input', refreshNote);
+
+  // Dictation: uses the phone's speech recognition when the browser offers it; otherwise the keyboard mic works.
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  let rec = null, recBase = '';
+  if(!SR){ $('micbtn').hidden = true; }
+  function startDictation(){
+    if(!SR || rec) return;
+    try{
+      rec = new SR();
+      rec.lang = 'en-US'; rec.continuous = true; rec.interimResults = true;
+      recBase = $('notetext').value ? $('notetext').value.replace(/\s*$/,' ') : '';
+      rec.onresult = ev=>{
+        let t=''; for(let k=0;k<ev.results.length;k++) t += ev.results[k][0].transcript;
+        $('notetext').value = recBase + t.trim(); refreshNote();
+      };
+      rec.onerror = ev=>{ $('micstatus').textContent = ev.error==='not-allowed' ? 'Microphone blocked. Use the mic on your keyboard instead.' : 'Dictation stopped. Tap Start dictation to try again, or type.'; };
+      rec.onend = ()=>{ rec = null; $('micbtn').setAttribute('aria-pressed','false'); $('micbtn').textContent = 'Start dictation'; };
+      rec.start();
+      $('micbtn').setAttribute('aria-pressed','true'); $('micbtn').textContent = 'Stop dictation';
+      $('micstatus').textContent = 'Listening…';
+    }catch(e){ rec = null; $('micstatus').textContent = 'Dictation isn\'t available here. Use the mic on your keyboard.'; }
+  }
+  function stopDictation(){ if(rec){ try{ rec.stop(); }catch(e){} } $('micstatus').textContent=''; }
+  $('micbtn').addEventListener('click',()=>{ rec ? stopDictation() : startDictation(); });
+
+  $('notesave').addEventListener('click', e=>{
+    stopDictation();
+    const it = noteTarget(); if(!it){ e.preventDefault(); return closeSheet(); }
+    it.note = $('notetext').value.trim();
+    const r = findReminder(it.note);
+    const nxt = state.items[state.idx];
+    const href = $('notesave').getAttribute('href');
+    if(href === '#') e.preventDefault();
+    state.noteFor = null;
+    if(r){
+      it.reminder = reminderTitle(it, r);
+      state.remTrip = {t:Date.now()};
+      save(); render();
+      return;   // the link opens the reminder shortcut; dialing continues when it brings you back
+    }
+    save(); render();
+    if(href.startsWith('tel:')){ const n = state.idx; setTimeout(()=>showResult(n), 0); return; }
+    closeSheet();
+    status(nxt ? 'Note saved. Next number is ready.' : 'Note saved.');
+    if(!nxt) $('summary').scrollIntoView({behavior:'smooth'});
+  });
 
   // ---------- end-of-list review ----------
   const GROUPS = [['talked','Answered'],['vm','Left voicemail'],['na','No answer'],['bad','Bad number'],['called','Called, no result logged'],[null,'Skipped / not called']];
@@ -449,7 +569,7 @@ Example – Sam Okafor, +1 253-555-0111`;
       .map(([k,l])=>`<div class="stat k-${k}"><b>${g[k].length}</b><span>${l}</span></div>`).join('');
     $('sumgroups').innerHTML = GROUPS.filter(([k])=>g[k].length).map(([k,l])=>
       `<div class="group"><h3>${l} · ${g[k].length}</h3><ul>${g[k].map(it=>
-        `<li><span>${esc(it.name||'No name')}${it.texted?'<span class="texted">texted</span>':''}</span><span class="p">${esc(fmt(it.dial))}</span></li>`).join('')}</ul></div>`).join('');
+        `<li><span>${esc(it.name||'No name')}${it.texted?'<span class="texted">texted</span>':''}${it.note?`<span class="note">${esc(it.note)}</span>`:''}</span><span class="p">${esc(fmt(it.dial))}</span></li>`).join('')}</ul></div>`).join('');
     $('recall').hidden = !(g.na.length + g.vm.length);
   }
   function summaryText(){
@@ -457,7 +577,10 @@ Example – Sam Okafor, +1 253-555-0111`;
     const lines = [`Call results: ${n - g[null].length} of ${n} dialed, ${g.talked.length} answered`];
     GROUPS.forEach(([k,l])=>{ if(!g[k].length) return;
       lines.push('', `${l} (${g[k].length})`);
-      g[k].forEach(it=>lines.push(`- ${it.name||'No name'} ${fmt(it.dial)}${it.texted?' (texted)':''}`));
+      g[k].forEach(it=>{
+        lines.push(`- ${it.name||'No name'} ${fmt(it.dial)}${it.texted?' (texted)':''}`);
+        if(it.note) lines.push(`    Note: ${it.note}`);
+      });
     });
     return lines.join('\n');
   }
@@ -568,7 +691,7 @@ Example – Sam Okafor, +1 253-555-0111`;
   })();
 
   // ---------- update check: compares this page with the copy on the site ----------
-  const VERSION = 7;
+  const VERSION = 8;
   (async function(){
     try{
       const base = location.pathname;
@@ -621,6 +744,21 @@ Example – Sam Okafor, +1 253-555-0111`;
   // Back from the "Dialer Text" shortcut
   function onShortcutReturn(){
     const h = location.hash;
+    if(h === '#remsaved' || h === '#remfail'){
+      history.replaceState(null, '', location.href.split('#')[0]);
+      const trip = state.remTrip; state.remTrip = null; save();
+      if(!trip) return;
+      const nxt = state.items[state.idx];
+      if(nxt && $('autonext').checked){
+        dialNextAfterText();
+        if(h === '#remfail') status('Reminder not saved. Check that a shortcut named exactly "Dialer Reminder" exists.');
+      } else {
+        closeSheet();
+        status(h === '#remsaved' ? 'Note saved and reminder added.' : 'Note saved, but the reminder was not. Check the "Dialer Reminder" shortcut.');
+        if(!nxt) $('summary').scrollIntoView({behavior:'smooth'});
+      }
+      return;
+    }
     if(h !== '#sent' && h !== '#notsent') return;
     history.replaceState(null, '', location.href.split('#')[0]);
     const t = state.items[state.lastTexted];
