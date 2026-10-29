@@ -129,7 +129,7 @@ body{margin:0}
     <button type="button" id="updatebtn">Update now</button>
   </div>
   <header>
-    <h1>Call List Dialer <span class="ver">v15</span></h1>
+    <h1>Call List Dialer <span class="ver">v16</span></h1>
     <span class="progress" id="progress">0 / 0</span>
   </header>
   <div class="bar"><i id="barfill"></i></div>
@@ -180,7 +180,7 @@ body{margin:0}
   <section class="card" id="importcard">
     <div>
       <div class="label">Import from screenshots</div>
-      <p class="hint" style="margin-top:6px">Pick screenshots or photos of your lead list. Your phone reads the names and numbers on its own, then you check them before loading. The first scan downloads the text reader, so give it a moment.</p>
+      <p class="hint" style="margin-top:6px">Pick one or more screenshots of your lead list. Screenshots taken on this phone, such as from the Salesforce app, work best; photos of a computer screen often miss rows. Your phone reads the names and numbers on its own, then you check them before loading. The first scan downloads the text reader, so give it a moment.</p>
     </div>
     <input type="file" id="shots" accept="image/png,image/jpeg,image/webp" multiple aria-label="Screenshots">
     <div class="row">
@@ -686,15 +686,7 @@ Example – Sam Okafor, +1 253-555-0111`;
       const lines=new Map(); words.forEach(w=>{ if(!lines.has(w.line)) lines.set(w.line,[]); lines.get(w.line).push(w); });
       const L=[...lines.values()].map(ws=>ws.sort((a,b)=>a.x0-b.x0));
       const hMed=median(words.map(w=>w.y1-w.y0))||20;
-      // headers, if the header row is in the picture
-      const hdr={};
-      words.forEach(w=>{ const t=w.text.toLowerCase().replace(/[^a-z]/g,'');
-        if(t==='name' && !hdr.name) hdr.name=w;
-        if(t==='phone' && !hdr.phone) hdr.phone=w;
-        if(t==='home' && !hdr.home) hdr.home=w;
-        if(['age','email','status','city','state','zip','gender'].includes(t)) (hdr.mid=hdr.mid||[]).push(w);
-      });
-      // phones per line
+      // phones per line (the words that make up each number are remembered so they're never read as a name)
       const found=[];
       L.forEach(ws=>{
         let s='', spans=[];
@@ -705,23 +697,35 @@ Example – Sam Okafor, +1 253-555-0111`;
         const pw=spans.filter(([p,q])=>q>a && p<b).map(x=>x[2]);
         // the leading "1" can be an age ending in 1 ("21 (425)...") - start the phone at the area code
         const first=pw.find(w=>/\d{3}/.test(w.text)) || pw[0];
-        found.push({digits, ws, px0:first.x0, cy:median(pw.map(w=>w.cy)), line:ws});
+        found.push({digits, ws, pw:new Set(pw), px0:first.x0, cy:median(pw.map(w=>w.cy))});
       });
       if(!found.length) return [];
-      // name column: header if present, else where names usually start on phone rows
-      const firstNameX=found.map(f=>{ const n=f.ws.find(w=>w.x1<=f.px0 && isNameWord(w)); return n? n.x0 : null; }).filter(x=>x!==null);
-      const colX = hdr.name ? hdr.name.x0 : median(firstNameX);
       const phoneX = median(found.map(f=>f.px0));
-      const midHdr = (hdr.mid||[]).filter(w=>hdr.name && w.x0>hdr.name.x1 && w.x0<phoneX).sort((a,b)=>a.x0-b.x0)[0];
-      const colEnd = midHdr ? midHdr.x0 : phoneX;
+      // name column from the header row: "Name", or "First Name" + "Last Name", on either side of the phone
+      const NAMEW=new Set(['name','first','last','full','lead','contact']);
+      let region=null;
+      const nameHdr=words.find(w=>w.text.toLowerCase().replace(/[^a-z]/g,'')==='name');
+      if(nameHdr){
+        const hl=L.find(ws=>ws.includes(nameHdr)) || [nameHdr];
+        const key=w=>w.text.toLowerCase().replace(/[^a-z]/g,'');
+        const real=hl.filter(w=>key(w).length>=2);            // skip sort arrows like "v"
+        const idx=real.indexOf(nameHdr);
+        let i0=idx, i1=idx;
+        while(i0>0 && NAMEW.has(key(real[i0-1])) && key(real[i0-1])!=='name' || (i0>0 && ['first','last','full'].includes(key(real[i0-1])))) i0--;
+        while(i1<real.length-1 && ['first','last','name','full'].includes(key(real[i1+1]))) i1++;
+        const start=real[i0].x0, after=real[i1+1];
+        region={lo:start, hi: after ? after.x0 : Infinity};
+      }
       const tol = 1.5*hMed;
       function nameIn(ws, f){
-        // a tilted photo shifts columns sideways; follow the drift seen in this row's phone position
-        const shift = (f.px0-phoneX) * (isFinite(colX)&&phoneX ? colX/phoneX : 0);
-        const lo=(isFinite(colX)?colX:-1e9)+shift-2*tol, hi=colEnd+(f.px0-phoneX)-hMed*0.5;
-        let toks=ws.filter(w=>w.x0>=lo && w.x1<=Math.min(hi, f.px0) && isNameWord(w));
-        // keep one unbroken run of words (a name), not scattered bits
-        if(toks.length>1){
+        let toks=ws.filter(w=>!f.pw.has(w) && isNameWord(w));
+        if(region){
+          // a tilted photo shifts columns sideways; follow the drift seen in this row's phone position
+          const shift=(f.px0-phoneX)*(phoneX ? region.lo/phoneX : 0);
+          const lo=region.lo+shift-2*tol, hi=region.hi+shift-hMed*0.5;
+          toks=toks.filter(w=>w.x0>=lo && w.x1<=hi);
+        } else if(toks.length>1){
+          // no header: keep one unbroken run of words (a name), not scattered bits from other columns
           const runs=[[toks[0]]];
           for(let k=1;k<toks.length;k++){ const gap=toks[k].x0-toks[k-1].x1; if(gap<3*hMed) runs.at(-1).push(toks[k]); else runs.push([toks[k]]); }
           toks=runs.sort((a,b)=>b.length-a.length || a[0].x0-b[0].x0)[0];
@@ -829,7 +833,7 @@ Example – Sam Okafor, +1 253-555-0111`;
   })();
 
   // ---------- update check: compares this page with the copy on the site ----------
-  const VERSION = 15;
+  const VERSION = 16;
   (async function(){
     try{
       const base = location.pathname;
