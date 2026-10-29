@@ -129,7 +129,7 @@ body{margin:0}
     <button type="button" id="updatebtn">Update now</button>
   </div>
   <header>
-    <h1>Call List Dialer <span class="ver">v14</span></h1>
+    <h1>Call List Dialer <span class="ver">v15</span></h1>
     <span class="progress" id="progress">0 / 0</span>
   </header>
   <div class="bar"><i id="barfill"></i></div>
@@ -658,6 +658,91 @@ Example – Sam Okafor, +1 253-555-0111`;
       toks=toks.filter(t=>t.length>1 || /^[A-Z]$/.test(t));
       return toks.map(splitJoined).join(' ').replace(/^[\s'\-]+|[\s'\-]+$/g,'');
     }
+    // ---- column-based reader: works from word positions (TSV) ----
+    const PHONE_RE=/(\+?1[\s.\-]?)?\(?\d{3}\)?[\s.\-]?\d{3}[\s.\-]?\d{4}/;
+    function median(a){ if(!a.length) return NaN; const s=[...a].sort((x,y)=>x-y); return s[Math.floor(s.length/2)]; }
+    function parseTsv(tsv){
+      const words=[];
+      tsv.split('\n').forEach(l=>{
+        const f=l.split('\t'); if(f.length<12 || f[0]!=='5') return;
+        const text=f.slice(11).join('\t').trim(); if(!text) return;
+        const x0=+f[6], y0=+f[7], w=+f[8], h=+f[9];
+        words.push({text, conf:+f[10], x0, y0, x1:x0+w, y1:y0+h, cy:y0+h/2, line:`${f[2]}.${f[3]}.${f[4]}`});
+      });
+      return words;
+    }
+    function cleanWord(t){ return t.replace(/[^A-Za-zÀ-ɏ'\-]/g,'').replace(/^['\-]+|['\-]+$/g,''); }
+    function isNameWord(w){
+      const c=cleanWord(w.text);
+      if(!c || CHECKBOX.test(w.text.trim()) || JUNK.test(w.text.trim())) return false;
+      if(c.length<2 && !/^[A-Z]$/.test(c)) return false;
+      const core=w.text.replace(/^[^A-Za-z\u00C0-\u024F]+|[^A-Za-z\u00C0-\u024F]+$/g,'');
+      const letters=(core.match(/[A-Za-z\u00C0-\u024F]/g)||[]).length;
+      if(letters < core.replace(/['\-]/g,'').length*0.8) return false;   // mostly letters (stray symbols at the ends ignored)
+      return !(c.length<=2 && w.conf<50);   // screen noise shows up as short, low-confidence bits
+    }
+    function rowsFromTsv(tsv){
+      const words=parseTsv(tsv); if(!words.length) return [];
+      const lines=new Map(); words.forEach(w=>{ if(!lines.has(w.line)) lines.set(w.line,[]); lines.get(w.line).push(w); });
+      const L=[...lines.values()].map(ws=>ws.sort((a,b)=>a.x0-b.x0));
+      const hMed=median(words.map(w=>w.y1-w.y0))||20;
+      // headers, if the header row is in the picture
+      const hdr={};
+      words.forEach(w=>{ const t=w.text.toLowerCase().replace(/[^a-z]/g,'');
+        if(t==='name' && !hdr.name) hdr.name=w;
+        if(t==='phone' && !hdr.phone) hdr.phone=w;
+        if(t==='home' && !hdr.home) hdr.home=w;
+        if(['age','email','status','city','state','zip','gender'].includes(t)) (hdr.mid=hdr.mid||[]).push(w);
+      });
+      // phones per line
+      const found=[];
+      L.forEach(ws=>{
+        let s='', spans=[];
+        ws.forEach(w=>{ spans.push([s.length, s.length+w.text.length, w]); s+=w.text+' '; });
+        const m=s.match(PHONE_RE); if(!m) return;
+        const digits=m[0].replace(/\D/g,'').replace(/^1(?=\d{10}$)/,''); if(digits.length!==10) return;
+        const a=m.index, b=m.index+m[0].length;
+        const pw=spans.filter(([p,q])=>q>a && p<b).map(x=>x[2]);
+        // the leading "1" can be an age ending in 1 ("21 (425)...") - start the phone at the area code
+        const first=pw.find(w=>/\d{3}/.test(w.text)) || pw[0];
+        found.push({digits, ws, px0:first.x0, cy:median(pw.map(w=>w.cy)), line:ws});
+      });
+      if(!found.length) return [];
+      // name column: header if present, else where names usually start on phone rows
+      const firstNameX=found.map(f=>{ const n=f.ws.find(w=>w.x1<=f.px0 && isNameWord(w)); return n? n.x0 : null; }).filter(x=>x!==null);
+      const colX = hdr.name ? hdr.name.x0 : median(firstNameX);
+      const phoneX = median(found.map(f=>f.px0));
+      const midHdr = (hdr.mid||[]).filter(w=>hdr.name && w.x0>hdr.name.x1 && w.x0<phoneX).sort((a,b)=>a.x0-b.x0)[0];
+      const colEnd = midHdr ? midHdr.x0 : phoneX;
+      const tol = 1.5*hMed;
+      function nameIn(ws, f){
+        // a tilted photo shifts columns sideways; follow the drift seen in this row's phone position
+        const shift = (f.px0-phoneX) * (isFinite(colX)&&phoneX ? colX/phoneX : 0);
+        const lo=(isFinite(colX)?colX:-1e9)+shift-2*tol, hi=colEnd+(f.px0-phoneX)-hMed*0.5;
+        let toks=ws.filter(w=>w.x0>=lo && w.x1<=Math.min(hi, f.px0) && isNameWord(w));
+        // keep one unbroken run of words (a name), not scattered bits
+        if(toks.length>1){
+          const runs=[[toks[0]]];
+          for(let k=1;k<toks.length;k++){ const gap=toks[k].x0-toks[k-1].x1; if(gap<3*hMed) runs.at(-1).push(toks[k]); else runs.push([toks[k]]); }
+          toks=runs.sort((a,b)=>b.length-a.length || a[0].x0-b[0].x0)[0];
+        }
+        return toks.map(w=>splitJoined(cleanWord(w.text))).join(' ').trim();
+      }
+      const used=new Set(), rows=[], seen=new Set();
+      found.sort((a,b)=>a.cy-b.cy).forEach(f=>{
+        if(seen.has(f.digits)) return; seen.add(f.digits);
+        let name=nameIn(f.ws,f);
+        if(!name){
+          // the reader split this row in two: take the name line closest in height
+          const cand=L.filter(ws=>!found.some(g=>g.ws===ws) && !used.has(ws))
+            .map(ws=>({ws, d:Math.abs(median(ws.map(w=>w.cy))-f.cy)})).filter(c=>c.d<hMed*1.2).sort((a,b)=>a.d-b.d)[0];
+          if(cand){ const n=nameIn(cand.ws,f); if(n){ name=n; used.add(cand.ws); } }
+        }
+        rows.push({name, phone:f.digits});
+      });
+      return rows;
+    }
+    // older line-by-line reader, used only if the word positions aren't available
     function rowsFrom(text){
       const re=/(\+?1[\s.\-]?)?\(?\d{3}\)?[\s.\-]?\d{3}[\s.\-]?\d{4}/;
       const seen=new Set(), rows=[];
@@ -723,8 +808,10 @@ Example – Sam Okafor, +1 253-555-0111`;
           out(`Reading screenshot ${i+1} of ${files.length}…`);
           let src = files[i];
           try{ src = await prepImage(files[i]); }catch(e){ /* fall back to the original picture */ }
-          const { data } = await worker.recognize(src);
-          all = all.concat(rowsFrom(data.text||''));
+          const { data } = await worker.recognize(src, {}, { text:true, tsv:true });
+          let rows = data.tsv ? rowsFromTsv(data.tsv) : [];
+          if(!rows.length) rows = rowsFrom(data.text||'');
+          all = all.concat(rows);
         }
         const seen=new Set(); all=all.filter(r=>!seen.has(r.phone)&&seen.add(r.phone));
         if(!all.length){ out('No phone numbers found. Try a sharper screenshot, zoomed in on the list.'); return; }
@@ -742,7 +829,7 @@ Example – Sam Okafor, +1 253-555-0111`;
   })();
 
   // ---------- update check: compares this page with the copy on the site ----------
-  const VERSION = 14;
+  const VERSION = 15;
   (async function(){
     try{
       const base = location.pathname;
