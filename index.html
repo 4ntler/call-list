@@ -129,7 +129,7 @@ body{margin:0}
     <button type="button" id="updatebtn">Update now</button>
   </div>
   <header>
-    <h1>Call List Dialer <span class="ver">v20</span></h1>
+    <h1>Call List Dialer <span class="ver">v21</span></h1>
     <span class="progress" id="progress">0 / 0</span>
   </header>
   <div class="bar"><i id="barfill"></i></div>
@@ -683,7 +683,7 @@ Example – Sam Okafor, +1 253-555-0111`;
     }
     function cleanWord(t){ return t.replace(/[^A-Za-zÀ-ɏ'\-]/g,'').replace(/^['\-]+|['\-]+$/g,''); }
     // field labels the Salesforce app prints beside values; never part of a person's name
-    const LABELS=new Set(['name','first','last','full','home','phone','mobile','cell','work','office','other','email','mail','age','status','lead','leads','source','owner','created','date','record','count','title','company','account','city','state','zip','address','type','contact','number','phones','birthdate','dob','gender','school','grad','year']);
+    const LABELS=new Set(['name','first','last','full','home','phone','mobile','cell','work','office','other','email','mail','age','status','lead','leads','source','owner','created','date','record','count','title','company','account','city','state','zip','zipcode','postal','code','area','street','address','country','county','type','contact','number','phones','birthdate','dob','birth','gender','school','grad','graduation','year','modified','assigned','recruiter','station','stage','rating','score','interest','program','component','education','activity','task','due','next','id','none']);
     function isLabel(w){ return LABELS.has(w.text.toLowerCase().replace(/[^a-z]/g,'')); }
     function isNameWord(w){
       const c=cleanWord(w.text);
@@ -761,8 +761,9 @@ Example – Sam Okafor, +1 253-555-0111`;
           const sameRow=others.filter(c=>Math.abs(c.dy)<hMed*1.2).sort((a,b)=>Math.abs(a.dy)-Math.abs(b.dy));
           // the closest line above that isn't below the previous phone (so a card never borrows the name from the record above)
           const prevPhone=found.filter(g=>g.cy<f.cy-hMed*0.5).map(g=>g.cy).sort((a,b)=>b-a)[0];
-          const above=others.filter(c=>c.dy<0 && c.dy>-hMed*4 && (prevPhone===undefined || f.cy+c.dy>prevPhone+hMed*0.5)).sort((a,b)=>b.dy-a.dy);
-          for(const c of [...sameRow, ...above]){
+          const above=others.filter(c=>c.dy<0 && c.dy>-hMed*12 && (prevPhone===undefined || f.cy+c.dy>prevPhone+hMed*0.5)).sort((a,b)=>b.dy-a.dy);
+          const nameLine=ws=>!ws.some(w=>isLabel(w) || /\d/.test(w.text));
+          for(const c of [...sameRow, ...above.filter(c=>nameLine(c.ws))]){
             const n=nameIn(c.ws, {...f, pw:new Set()}); if(n){ name=n; nameFrom='nearby'; used.add(c.ws); break; }
           }
         }
@@ -1044,7 +1045,7 @@ Example – Sam Okafor, +1 253-555-0111`;
   })();
 
   // ---------- update check: compares this page with the copy on the site ----------
-  const VERSION = 20;
+  const VERSION = 21;
   (async function(){
     try{
       const base = location.pathname;
