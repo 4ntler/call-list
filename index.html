@@ -123,7 +123,7 @@ body{margin:0}
     <button type="button" id="updatebtn">Update now</button>
   </div>
   <header>
-    <h1>Call List Dialer <span class="ver">v10</span></h1>
+    <h1>Call List Dialer <span class="ver">v11</span></h1>
     <span class="progress" id="progress">0 / 0</span>
   </header>
   <div class="bar"><i id="barfill"></i></div>
@@ -167,6 +167,7 @@ body{margin:0}
   <div class="settings">
     <label class="toggle"><input type="checkbox" id="autonext"> Dial the next number as soon as I log a result</label>
     <label class="toggle"><input type="checkbox" id="texton"> Open a follow-up text after No answer or Left voicemail</label>
+    <label class="toggle"><input type="checkbox" id="dictsc"> After Talked, start listening right away with my "Dialer Note" shortcut</label>
     <label class="toggle" id="autosendrow"><input type="checkbox" id="autosend"> Send the text automatically with my "Dialer Text" shortcut (no Send button)</label>
   </div>
 
@@ -377,7 +378,7 @@ Example – Sam Okafor, +1 253-555-0111`;
     // The tap on a result is what opens the next app, so iPhones treat it like tapping Call.
     document.querySelectorAll('#s-result .rbtn').forEach(a=>{
       const o = a.dataset.o;
-      if(o==='talked') a.href = '#';
+      if(o==='talked') a.href = $('dictsc').checked ? noteShortcutUrl() : '#';
       else if(textOn && (o==='na'||o==='vm')) a.href = $('autosend').checked ? shortcutUrl(it) : smsUrl(it);
       else if(nxt && dialOn) a.href = telUrl(nxt);
       else a.href = '#';
@@ -436,7 +437,8 @@ Example – Sam Okafor, +1 253-555-0111`;
     if(it.outcome==='talked'){
       save(); render();
       showNote(i);
-      $('notetext').focus();   // brings up the keyboard; iPhones only allow this from the tap itself
+      if(b.getAttribute('href') === '#') $('notetext').focus();   // keyboard up; the shortcut path dictates instead
+      else $('notetext').placeholder = 'Listening in your Dialer Note shortcut…';
       return;
     }
     save(); render();
@@ -472,6 +474,13 @@ Example – Sam Okafor, +1 253-555-0111`;
       + '&x-success=' + encodeURIComponent(back + '#remsaved')
       + '&x-cancel=' + encodeURIComponent(back + '#remfail')
       + '&x-error=' + encodeURIComponent(back + '#remfail');
+  }
+  function noteShortcutUrl(){
+    const back = location.href.split('#')[0].split('?')[0];
+    return 'shortcuts://x-callback-url/run-shortcut?name=' + encodeURIComponent('Dialer Note')
+      + '&x-success=' + encodeURIComponent(back + '?dn=1')
+      + '&x-cancel=' + encodeURIComponent(back + '?dn=0')
+      + '&x-error=' + encodeURIComponent(back + '?dn=0');
   }
   function noteTarget(){ return state.items[state.noteFor]; }
   function refreshNote(){
@@ -570,6 +579,8 @@ Example – Sam Okafor, +1 253-555-0111`;
   $('autonext').checked = setting('dialnext', true);
   $('texton').checked = setting('text', true);
   $('autosend').checked = setting('autosend', false);
+  $('dictsc').checked = setting('dictsc', false);
+  $('dictsc').addEventListener('change',e=>{ try{localStorage.setItem(KEY+'.dictsc', e.target.checked?'1':'0')}catch(err){} });
   $('autosend').addEventListener('change',e=>{ try{localStorage.setItem(KEY+'.autosend', e.target.checked?'1':'0')}catch(err){} });
   const syncField = ()=>{ $('autosendrow').hidden = !$('texton').checked; };
   syncField();
@@ -664,7 +675,7 @@ Example – Sam Okafor, +1 253-555-0111`;
   })();
 
   // ---------- update check: compares this page with the copy on the site ----------
-  const VERSION = 10;
+  const VERSION = 11;
   (async function(){
     try{
       const base = location.pathname;
@@ -749,6 +760,20 @@ Example – Sam Okafor, +1 253-555-0111`;
   }
   window.addEventListener('hashchange', onShortcutReturn);
   onShortcutReturn();
+
+  // Back from the "Dialer Note" shortcut: ?dn=1&result=<what you said>
+  (function(){
+    const q = new URLSearchParams(location.search);
+    if(!q.has('dn')) return;
+    const said = (q.get('result') || '').trim();
+    history.replaceState(null, '', location.pathname);
+    const i = state.noteFor;
+    if(i === null || i === undefined || !state.items[i]) return;
+    showNote(i);
+    $('notetext').placeholder = 'Interested in 68W, wants info sent. Remind me to call him back Friday at 3 pm.';
+    if(said){ $('notetext').value = said; refreshNote(); }
+    else status('Nothing was dictated. Type the note or tap the keyboard mic.');
+  })();
   backFromMessages();   // page was reloaded while you were in Messages
 })();
 </script>
