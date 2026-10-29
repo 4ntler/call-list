@@ -129,7 +129,7 @@ body{margin:0}
     <button type="button" id="updatebtn">Update now</button>
   </div>
   <header>
-    <h1>Call List Dialer <span class="ver">v18</span></h1>
+    <h1>Call List Dialer <span class="ver">v19</span></h1>
     <span class="progress" id="progress">0 / 0</span>
   </header>
   <div class="bar"><i id="barfill"></i></div>
@@ -179,10 +179,10 @@ body{margin:0}
 
   <section class="card" id="importcard">
     <div>
-      <div class="label">Import from screenshots</div>
-      <p class="hint" style="margin-top:6px">Pick one or more screenshots of your lead list. Screenshots taken on this phone, such as from the Salesforce app, work best; photos of a computer screen often miss rows. Your phone reads the names and numbers on its own, then you check them before loading. The first scan downloads the text reader, so give it a moment.</p>
+      <div class="label">Import from screenshots or a screen recording</div>
+      <p class="hint" style="margin-top:6px">Pick screenshots or a screen recording of your lead list. For a recording, scroll slowly and steadily; it can take a minute or two to read. Screenshots or recordings made on this phone, such as from the Salesforce app, work best; photos of a computer screen often miss rows. Your phone reads the names and numbers on its own, then you check them before loading. The first scan downloads the text reader, so give it a moment.</p>
     </div>
-    <input type="file" id="shots" accept="image/png,image/jpeg,image/webp" multiple aria-label="Screenshots">
+    <input type="file" id="shots" accept="image/png,image/jpeg,image/webp,video/*" multiple aria-label="Screenshots or screen recordings">
     <div class="row">
       <button type="button" id="readshots">Read screenshots</button>
       <button type="button" id="stopread" hidden>Stop</button>
@@ -671,6 +671,16 @@ Example – Sam Okafor, +1 253-555-0111`;
       });
       return words;
     }
+    // a capital I is often read as a lowercase l ("lan Brooks"); in a capitalized name, a word can't start with lowercase l
+    function fixCapitalI(parts){
+      const capped=parts.some(p=>/^[A-Z]/.test(p));
+      // lowercase l then a vowel is a misread L (Luis, Leah); then a consonant, a misread I (Isaac, Ivan); "lan" is Ian
+      return parts.map(p=>{
+        if(!capped || !/^l[a-z]+$/.test(p)) return p;
+        if(p==='lan') return 'Ian';
+        return (/^l[aeiouyl]/.test(p) ? 'L' : 'I') + p.slice(1);
+      });
+    }
     function cleanWord(t){ return t.replace(/[^A-Za-zÀ-ɏ'\-]/g,'').replace(/^['\-]+|['\-]+$/g,''); }
     function isNameWord(w){
       const c=cleanWord(w.text);
@@ -734,7 +744,7 @@ Example – Sam Okafor, +1 253-555-0111`;
           for(let k=1;k<toks.length;k++){ const gap=toks[k].x0-toks[k-1].x1; if(gap<3*hMed) runs.at(-1).push(toks[k]); else runs.push([toks[k]]); }
           toks=runs.sort((a,b)=>b.length-a.length || a[0].x0-b[0].x0)[0];
         }
-        return toks.map(w=>splitJoined(cleanWord(w.text))).join(' ').trim();
+        return fixCapitalI(toks.map(w=>splitJoined(cleanWord(w.text))).join(' ').split(' ').filter(Boolean)).join(' ').trim();
       }
       const used=new Set(), rows=[], seen=new Set();
       found.sort((a,b)=>a.cy-b.cy).forEach(f=>{
@@ -746,7 +756,7 @@ Example – Sam Okafor, +1 253-555-0111`;
             .map(ws=>({ws, d:Math.abs(median(ws.map(w=>w.cy))-f.cy)})).filter(c=>c.d<hMed*1.2).sort((a,b)=>a.d-b.d)[0];
           if(cand){ const n=nameIn(cand.ws,f); if(n){ name=n; used.add(cand.ws); } }
         }
-        rows.push({name, phone:f.digits});
+        rows.push({name, phone:f.digits, cy:f.cy, h:hMed});
       });
       return rows;
     }
@@ -771,20 +781,33 @@ Example – Sam Okafor, +1 253-555-0111`;
         const m=s.match(PHONE_RE); let phone='', pw=new Set();
         if(m){ const d=m[0].replace(/\D/g,'').replace(/^1(?=\d{10}$)/,''); if(d.length===10){ phone=d; spans.filter(([p,q])=>q>m.index && p<m.index+m[0].length).forEach(x=>pw.add(x[2])); } }
         const nameToks=rest.filter(w=>!pw.has(w) && isNameWord(w) && !HDRWORDS.has(w.text.toLowerCase().replace(/[^a-z]/g,'')));
-        const name=nameToks.map(w=>splitJoined(cleanWord(w.text))).join(' ').trim();
+        const name=fixCapitalI(nameToks.map(w=>splitJoined(cleanWord(w.text))).join(' ').split(' ').filter(Boolean)).join(' ').trim();
         if(!name && !phone) return;
-        out.push({num: numW ? parseInt(numW.text,10) : null, name, phone, cy});
+        out.push({num: numW ? parseInt(numW.text,10) : null, name, phone, cy, h:hMed});
       });
       out.sort((a,b)=>a.cy-b.cy);
       // fill a misread row number from its neighbours, using the row spacing
       const known=out.filter(r=>r.num!==null);
       const pitch=median(known.slice(1).map((r,k)=>(r.cy-known[k].cy)/Math.max(1,r.num-known[k].num)).filter(x=>x>0)) || hMed*2.5;
+      // a row number that doesn't fit the spacing of the rows around it was misread ("25" read as "295"): re-derive it
+      out.forEach((r,k)=>{
+        if(r.num===null) return;
+        const prev=[...out.slice(0,k)].reverse().find(x=>x.num!==null), next=out.slice(k+1).find(x=>x.num!==null);
+        const fits=(ref, sign)=>{ const steps=(r.cy-ref.cy)/pitch; const exp=ref.num+Math.round(steps); return Math.abs(steps-Math.round(steps))<0.35 ? exp : null; };
+        const ePrev=prev ? fits(prev) : null, eNext=next ? fits(next) : null;
+        const expected = ePrev!==null && eNext!==null ? (ePrev===eNext ? ePrev : null) : (ePrev!==null ? ePrev : eNext);
+        if(expected!==null && expected!==r.num) r.num=null;     // drop it; the fill-in below re-derives it from the spacing
+      });
       out.forEach((r,k)=>{
         if(r.num!==null) return;
         const prev=[...out.slice(0,k)].reverse().find(x=>x.num!==null), next=out.slice(k+1).find(x=>x.num!==null);
-        if(!prev) return;
-        const guess=prev.num+Math.round((r.cy-prev.cy)/pitch);
-        if(guess>prev.num && (!next || guess<next.num) && Math.abs((r.cy-prev.cy)/pitch-(guess-prev.num))<0.35) r.num=guess;
+        if(prev){
+          const guess=prev.num+Math.round((r.cy-prev.cy)/pitch);
+          if(guess>prev.num && (!next || guess<next.num) && Math.abs((r.cy-prev.cy)/pitch-(guess-prev.num))<0.35) r.num=guess;
+        } else if(next){
+          const guess=next.num-Math.round((next.cy-r.cy)/pitch);
+          if(guess>0 && guess<next.num && Math.abs((next.cy-r.cy)/pitch-(next.num-guess))<0.35) r.num=guess;
+        }
       });
       // safety: numbers must go up down the screen and appear once; anything else is dropped from matching
       const counts={}; out.forEach(r=>{ if(r.num!==null) counts[r.num]=(counts[r.num]||0)+1; });
@@ -796,17 +819,20 @@ Example – Sam Okafor, +1 253-555-0111`;
     }
     function mergeByRowNumber(perShot){
       // perShot: arrays of {num,name,phone}. Joins names and phones that share a row number across screenshots.
+      // each row's name and phone are decided by vote across every screenshot or video frame that shows it
       const byNum=new Map();
       perShot.forEach(rows=>rows.forEach(r=>{
-        const e=byNum.get(r.num)||{num:r.num,name:'',phone:'',names:new Set(),phones:new Set()};
-        if(r.name){ e.names.add(r.name.toLowerCase()); if(r.name.length>e.name.length) e.name=r.name; }
-        if(r.phone){ e.phones.add(r.phone); e.phone=e.phone||r.phone; }
+        const e=byNum.get(r.num)||{num:r.num,names:new Map(),phones:new Map()};
+        if(r.name) e.names.set(r.name, (e.names.get(r.name)||0)+1);
+        if(r.phone) e.phones.set(r.phone, (e.phones.get(r.phone)||0)+1);
         byNum.set(r.num,e);
       }));
-      return [...byNum.values()].sort((a,b)=>a.num-b.num).map(e=>({
-        num:e.num, phone:e.phones.size===1? e.phone : '', name:e.name,
-        conflict: e.phones.size>1   // two different phones read for one row: don't guess
-      }));
+      const top=m=>{ const a=[...m.entries()].sort((x,y)=>y[1]-x[1] || y[0].length-x[0].length); return a; };
+      return [...byNum.values()].sort((a,b)=>a.num-b.num).map(e=>{
+        const ph=top(e.phones), nm=top(e.names);
+        const clear = ph.length && (ph.length===1 || ph[0][1]>ph[1][1]);   // a tie between two phones: don't guess
+        return { num:e.num, phone: clear ? ph[0][0] : '', name: nm.length ? nm[0][0] : '', conflict: ph.length>1 && !clear };
+      });
     }
     // older line-by-line reader, used only if the word positions aren't available
     function rowsFrom(text){
@@ -842,7 +868,10 @@ Example – Sam Okafor, +1 253-555-0111`;
     }
     async function prepImage(file){
       const im = await loadImage(file);
-      const w = Math.min(Math.max(im.naturalWidth,1600),2200), h = Math.round(im.naturalHeight*w/im.naturalWidth);
+      return prepDrawable(im, im.naturalWidth, im.naturalHeight);
+    }
+    function prepDrawable(im, iw, ih){
+      const w = Math.min(Math.max(iw,1600),2200), h = Math.round(ih*w/iw);
       const cv=document.createElement('canvas'); cv.width=w; cv.height=h;
       const ctx=cv.getContext('2d'); ctx.imageSmoothingEnabled=true; ctx.imageSmoothingQuality='high';
       ctx.drawImage(im,0,0,w,h);
@@ -852,6 +881,45 @@ Example – Sam Okafor, +1 253-555-0111`;
       for(let k=0,p=0;k<g.length;k++,p+=4){ const v=Math.max(0,Math.min(255,g[k]/(bg[k]+1)*235)); px[p]=px[p+1]=px[p+2]=v; px[p+3]=255; }
       ctx.putImageData(img,0,0);
       return cv;
+    }
+    // ---- screen recordings: pick sharp, changed frames, then read each like a screenshot ----
+    function once(el, ev, ms){ return new Promise((ok,fail)=>{ const t=setTimeout(()=>{ el.removeEventListener(ev,h); fail(new Error('timeout '+ev)); }, ms); const h=()=>{ clearTimeout(t); el.removeEventListener(ev,h); ok(); }; el.addEventListener(ev,h); }); }
+    async function seek(v, t){ if(Math.abs(v.currentTime-t)<0.01) return; const p=once(v,'seeked',4000); v.currentTime=t; await p; }
+    async function openVideo(file){
+      const v=document.createElement('video');
+      v.muted=true; v.playsInline=true; v.setAttribute('playsinline',''); v.preload='auto';
+      v.src=URL.createObjectURL(file);
+      if(v.readyState<1) await once(v,'loadedmetadata',15000);
+      try{ await v.play(); v.pause(); }catch(e){}
+      if(v.readyState<2){ try{ await once(v,'loadeddata',8000); }catch(e){} }
+      return v;
+    }
+    async function pickFrames(v, onStep, isStopped){
+      const dur=v.duration; if(!isFinite(dur) || dur<=0) throw new Error('duration');
+      const step = dur>90 ? dur/180 : 0.5;
+      const tw=120, th=Math.max(1,Math.round(v.videoHeight*tw/v.videoWidth));
+      const cv=document.createElement('canvas'); cv.width=tw; cv.height=th; const ctx=cv.getContext('2d',{willReadFrequently:true});
+      const samples=[];
+      for(let t=Math.min(0.1,dur/2); t<dur; t+=step){
+        if(isStopped()) return [];
+        await seek(v,t); ctx.drawImage(v,0,0,tw,th);
+        const d=ctx.getImageData(0,0,tw,th).data, g=new Float32Array(tw*th);
+        for(let k=0,p=0;k<g.length;k++,p+=4) g[k]=0.299*d[p]+0.587*d[p+1]+0.114*d[p+2];
+        let sharp=0; for(let y=1;y<th;y++) for(let x=1;x<tw;x++){ const k=y*tw+x; sharp+=Math.abs(g[k]-g[k-1])+Math.abs(g[k]-g[k-tw]); }
+        samples.push({t, sharp, g});
+        onStep(samples.length, Math.ceil(dur/step));
+      }
+      const keep=[]; let last=null;
+      samples.forEach((s,k)=>{
+        // blurred mid-scroll: much softer than the sharpest frame within about 1.5 seconds
+        // (compared locally, because a screen with less text is naturally less "sharp")
+        const win=Math.max(1,Math.round(1.5/step));
+        const near=samples.slice(Math.max(0,k-win), k+win+1);
+        if(s.sharp < Math.max(...near.map(x=>x.sharp))*0.6) return;
+        if(last){ let diff=0; for(let k=0;k<s.g.length;k++) diff+=Math.abs(s.g[k]-last.g[k]); if(diff/s.g.length < 1.5) return; }   // nothing new on screen
+        keep.push(s.t); last=s;
+      });
+      return keep.slice(0,90);
     }
     $('stopread').addEventListener('click',async ()=>{
       stopped=true; if(worker){ try{await worker.terminate();}catch(e){} worker=null; }
@@ -871,20 +939,66 @@ Example – Sam Okafor, +1 253-555-0111`;
         // read them in the order they were taken, so the list keeps its order
         files.sort((a,b)=>(a.lastModified||0)-(b.lastModified||0));
         let all=[]; const seen=new Set(), memo={}, report=[], numbered=[];
-        for(let i=0;i<files.length;i++){
-          if(stopped) return;
-          out(`Reading screenshot ${i+1} of ${files.length}…`);
-          let src = files[i];
-          try{ src = await prepImage(files[i]); }catch(e){ /* fall back to the original picture */ }
-          const imgW = src.width || 0;
+        const votes=new Map();            // phone -> {count, names: Map}, from video frames
+        const isStopped=()=>stopped;
+        async function readOne(src, imgW, imgH, fromVideo){
           const { data } = await worker.recognize(src, {}, { text:true, tsv:true });
           let rows = data.tsv ? rowsFromTsv(data.tsv, memo, imgW) : [];
-          if(!rows.length) rows = rowsFrom(data.text||'');
-          if(data.tsv) numbered.push(numberedRows(data.tsv, imgW));
+          if(!rows.length && !fromVideo) rows = rowsFrom(data.text||'');
+          let nrows = data.tsv ? numberedRows(data.tsv, imgW) : [];
+          if(fromVideo && imgH){
+            // a row cut off at the top or bottom edge of a frame is easy to misread; it shows up whole in another frame
+            const inside=r=>!r.h || (r.cy > r.h*1.6 && r.cy < imgH - r.h*1.6);
+            rows=rows.filter(inside); nrows=nrows.filter(inside);
+          }
+          if(data.tsv) numbered.push(nrows);
+          return { rows, names: nrows.filter(r=>r.name && !r.phone).length };
+        }
+        function addRows(rows, fromVideo){
           let added=0, dup=0;
-          rows.forEach(r=>{ if(seen.has(r.phone)){ dup++; return; } seen.add(r.phone); all.push(r); added++; });
-          const names = data.tsv ? numbered.at(-1).filter(r=>r.name && !r.phone).length : 0;
-          report.push(`#${i+1}: ` + (rows.length ? `${added} new number${added===1?'':'s'}` + (dup ? `, ${dup} already read` : '') : (names ? `${names} names` : 'nothing found')));
+          rows.forEach(r=>{
+            if(fromVideo){ const e=votes.get(r.phone)||{count:0,names:new Map()}; e.count++; if(r.name) e.names.set(r.name,(e.names.get(r.name)||0)+1); votes.set(r.phone,e); }
+            if(seen.has(r.phone)){ dup++; return; } seen.add(r.phone); all.push(r); added++;
+          });
+          return {added, dup};
+        }
+        for(let i=0;i<files.length;i++){
+          if(stopped) return;
+          const f=files[i];
+          if(/^video\//.test(f.type) || /\.(mov|mp4|m4v|webm)$/i.test(f.name||'')){
+            out(`Opening recording ${i+1} of ${files.length}…`);
+            let v;
+            try{ v = await openVideo(f); }catch(e){ report.push(`#${i+1}: recording couldn't be opened`); continue; }
+            const times = await pickFrames(v, (k,n)=>out(`Scanning recording ${i+1}: ${Math.min(k,n)} of ${n}…`), isStopped);
+            let added=0, frames=0;
+            for(let j=0;j<times.length;j++){
+              if(stopped) return;
+              out(`Reading recording ${i+1}: frame ${j+1} of ${times.length}…`);
+              try{ await seek(v, times[j]); }catch(e){ continue; }
+              const cv = prepDrawable(v, v.videoWidth, v.videoHeight);
+              const r = await readOne(cv, cv.width, cv.height, true);
+              added += addRows(r.rows, true).added; frames++;
+            }
+            URL.revokeObjectURL(v.src);
+            report.push(`#${i+1}: recording, ${frames} frames, ${added} numbers`);
+            continue;
+          }
+          out(`Reading screenshot ${i+1} of ${files.length}…`);
+          let src = f;
+          try{ src = await prepImage(f); }catch(e){ /* fall back to the original picture */ }
+          const r = await readOne(src, src.width || 0, src.height || 0, false);
+          const {added, dup} = addRows(r.rows, false);
+          report.push(`#${i+1}: ` + (r.rows.length ? `${added} new number${added===1?'':'s'}` + (dup ? `, ${dup} already read` : '') : (r.names ? `${r.names} names` : 'nothing found')));
+        }
+        // video clean-up: drop one-off misreads that are one digit away from a number seen in several frames,
+        // and give each number the name read most often
+        if(votes.size){
+          const near=(a,b)=>{ let d=0; for(let k=0;k<10;k++) if(a[k]!==b[k]) d++; return d===1; };
+          all=all.filter(r=>{
+            const e=votes.get(r.phone); if(!e || e.count>1) return true;
+            return ![...votes.entries()].some(([p,o])=>p!==r.phone && o.count>=2 && near(p,r.phone));
+          });
+          all.forEach(r=>{ const e=votes.get(r.phone); if(e && e.names.size){ r.name=[...e.names.entries()].sort((x,y)=>y[1]-x[1]||y[0].length-x[0].length)[0][0]; } });
         }
         // names and phones on separate screenshots: join them by row number
         let matched=0;
@@ -905,7 +1019,7 @@ Example – Sam Okafor, +1 253-555-0111`;
         $('listin').value = all.map(r=>(r.name? r.name+', ':'')+r.phone).join('\n');
         $('editbox').open = true;
         const noName = all.filter(r=>!r.name).length;
-        out(`Found ${all.length} numbers from ${files.length} screenshot${files.length>1?'s':''} (${report.join(' · ')}).`
+        out(`Found ${all.length} numbers from ${files.length} file${files.length>1?'s':''} (${report.join(' · ')}).`
           + (matched ? ` Matched ${matched} names to numbers by row number.` : '')
           + (noName ? ` ${noName} without a name.` : '')
           + ` Check every digit, fix anything off, then tap Load list.`);
@@ -920,7 +1034,7 @@ Example – Sam Okafor, +1 253-555-0111`;
   })();
 
   // ---------- update check: compares this page with the copy on the site ----------
-  const VERSION = 18;
+  const VERSION = 19;
   (async function(){
     try{
       const base = location.pathname;
