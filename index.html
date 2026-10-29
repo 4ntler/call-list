@@ -123,7 +123,7 @@ body{margin:0}
     <button type="button" id="updatebtn">Update now</button>
   </div>
   <header>
-    <h1>Call List Dialer <span class="ver">v8</span></h1>
+    <h1>Call List Dialer <span class="ver">v9</span></h1>
     <span class="progress" id="progress">0 / 0</span>
   </header>
   <div class="bar"><i id="barfill"></i></div>
@@ -494,6 +494,7 @@ Example – Sam Okafor, +1 253-555-0111`;
     const it = state.items[i];
     state.noteFor = i; state.open = null; save();
     $('note-who').textContent = `Talked with ${displayName(it) || fmt(it.dial)}`;
+    killDictation();
     $('notetext').value = it.note || '';
     $('micstatus').textContent = '';
     refreshNote();
@@ -504,31 +505,67 @@ Example – Sam Okafor, +1 253-555-0111`;
   $('notetext').addEventListener('input', refreshNote);
 
   // Dictation: uses the phone's speech recognition when the browser offers it; otherwise the keyboard mic works.
+  // Every note gets a brand-new recognition session; anything from an older session is ignored.
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  let rec = null, recBase = '';
+  let rec = null, recSession = 0, lastHeard = '';
   if(!SR){ $('micbtn').hidden = true; }
-  function startDictation(){
-    if(!SR || rec) return;
-    try{
-      rec = new SR();
-      rec.lang = 'en-US'; rec.continuous = true; rec.interimResults = true;
-      recBase = $('notetext').value ? $('notetext').value.replace(/\s*$/,' ') : '';
-      rec.onresult = ev=>{
-        let t=''; for(let k=0;k<ev.results.length;k++) t += ev.results[k][0].transcript;
-        $('notetext').value = recBase + t.trim(); refreshNote();
-      };
-      rec.onerror = ev=>{ $('micstatus').textContent = ev.error==='not-allowed' ? 'Microphone blocked. Use the mic on your keyboard instead.' : 'Dictation stopped. Tap Start dictation to try again, or type.'; };
-      rec.onend = ()=>{ rec = null; $('micbtn').setAttribute('aria-pressed','false'); $('micbtn').textContent = 'Start dictation'; };
-      rec.start();
-      $('micbtn').setAttribute('aria-pressed','true'); $('micbtn').textContent = 'Stop dictation';
-      $('micstatus').textContent = 'Listening…';
-    }catch(e){ rec = null; $('micstatus').textContent = 'Dictation isn\'t available here. Use the mic on your keyboard.'; }
+  function micUi(on){
+    $('micbtn').setAttribute('aria-pressed', on ? 'true' : 'false');
+    $('micbtn').textContent = on ? 'Stop dictation' : 'Start dictation';
   }
-  function stopDictation(){ if(rec){ try{ rec.stop(); }catch(e){} } $('micstatus').textContent=''; }
+  function killDictation(){
+    recSession++;                       // anything still arriving from the old session is now ignored
+    if(rec){
+      const old = rec; rec = null;
+      old.onresult = old.onerror = old.onend = null;
+      try{ old.abort(); }catch(e){}
+    }
+    micUi(false);
+  }
+  function startDictation(){
+    if(!SR) return;
+    killDictation();
+    const my = recSession;
+    try{
+      const r = new SR();
+      r.lang = 'en-US'; r.continuous = true; r.interimResults = true;
+      const base = $('notetext').value ? $('notetext').value.replace(/\s*$/,' ') : '';
+      let started = false;
+      r.onresult = ev=>{
+        if(my !== recSession) return;
+        let t = '';
+        for(let k=0;k<ev.results.length;k++) t += ev.results[k][0].transcript;
+        t = t.trim();
+        // iPhones sometimes replay the previous note when a new session starts; skip that echo.
+        if(!started && lastHeard && t === lastHeard) return;
+        started = true;
+        $('notetext').value = base + t;
+        lastHeard = t;
+        refreshNote();
+      };
+      r.onerror = ev=>{
+        if(my !== recSession) return;
+        if(ev.error === 'no-speech' || ev.error === 'aborted') return;
+        $('micstatus').textContent = ev.error==='not-allowed' ? 'Microphone blocked. Use the mic on your keyboard instead.' : 'Dictation stopped. Tap Start dictation to try again, or type.';
+      };
+      r.onend = ()=>{ if(my !== recSession) return; rec = null; micUi(false); if($('micstatus').textContent==='Listening…') $('micstatus').textContent=''; };
+      rec = r;
+      r.start();
+      micUi(true);
+      $('micstatus').textContent = 'Listening…';
+    }catch(e){ rec = null; micUi(false); $('micstatus').textContent = 'Dictation isn\'t available here. Use the mic on your keyboard.'; }
+  }
+  function stopDictation(){
+    if(rec){ try{ rec.stop(); }catch(e){} }   // stop keeps the final words; onend tidies up
+    $('micstatus').textContent = '';
+  }
   $('micbtn').addEventListener('click',()=>{ rec ? stopDictation() : startDictation(); });
+  // Leaving the page for a call, text or reminder ends the session completely.
+  document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='hidden') killDictation(); });
+  window.addEventListener('pagehide', killDictation);
 
   $('notesave').addEventListener('click', e=>{
-    stopDictation();
+    killDictation();
     const it = noteTarget(); if(!it){ e.preventDefault(); return closeSheet(); }
     it.note = $('notetext').value.trim();
     const r = findReminder(it.note);
@@ -691,7 +728,7 @@ Example – Sam Okafor, +1 253-555-0111`;
   })();
 
   // ---------- update check: compares this page with the copy on the site ----------
-  const VERSION = 8;
+  const VERSION = 9;
   (async function(){
     try{
       const base = location.pathname;
